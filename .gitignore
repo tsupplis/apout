@@ -1,2 +1,8 @@
+# Objects
 *.o
 apout
+docker
+
+# Vim
+*.un~
+*.swp

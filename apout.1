@@ -1,7 +1,7 @@
 .\" Copyright Warren Toomey
 .\"
-.\" $Revision: 1.9 $
-.\" $Date: 2002/06/10 12:08:27 $
+.\" $Revision: 1.10 $
+.\" $Date: 2008/05/15 03:20:52 $
 .\"
 .Dd December, 2000
 .Dt APOUT 1
@@ -89,9 +89,9 @@ to the filename. Therefore, if you have the 7th Edition files located in
 .Ar /usr/misc/v7root
 and you do:
 .Bd -literal
-	%  setenv APOUT_ROOT /usr/misc/v7root
-	%  apout $APOUT_ROOT/bin/sh
-	$
+    %  setenv APOUT_ROOT /usr/misc/v7root
+    %  apout $APOUT_ROOT/bin/sh
+    $
 .Ed
 .Pp
 then you will be greeted with the 7th Edition Bourne shell prompt as shown:
@@ -104,14 +104,25 @@ Note that you must set
 .Ev APOUT_ROOT
 before you can run 
 .Nm apout.
+.Pp
+There is one other optional environment variable:
+.Ev APOUT_UNIX_VERSION.
+This is mainly required for UNIX binaries that use the 0407 header,
+which was used across several versions of UNIX, each with a different set
+of system calls. If APOUT_UNIX_VERSION is set,
+.Nm apout
+will use the given version when it cannot determine which version of UNIX a
+binary belongs to. The available values are "V1", "V2", "V3", "V4", "V5", "V6",
+"V7", "2.9BSD" and "2.11BSD".
+.Pp
 .Sh EMULATED ENVIRONMENT VARIABLES
 Initially, PDP-11 binaries run via
 .Nm apout
 receive the following set of emulated environment variables:
 .Bd -literal
-	PATH  /bin:/usr/bin:/usr/sbin:/usr/ucb:/usr/games:/usr/local/bin:.
-	HOME  /
-	TERM  vt100
+    PATH  /bin:/usr/bin:/usr/sbin:/usr/ucb:/usr/games:/usr/local/bin:.
+    HOME  /
+    TERM  vt100
 .Ed
 .Pp
 Emulated programs can, of course, change this emulated environment;
@@ -123,8 +134,8 @@ Binaries that are interpreted by
 can interact with native programs in several ways: through files in the
 filesystem, and through pipes. For example, you can do the following:
 .Bd -literal
-	%  ls -lR | apout $APOUT_ROOT/bin/wc | lpr
-	%  apout $APOUT_ROOT/bin/sort < file | uniq > newfile
+    %  ls -lR | apout $APOUT_ROOT/bin/wc | lpr
+    %  apout $APOUT_ROOT/bin/sort < file | uniq > newfile
 .Ed
 .Pp
 where
@@ -139,13 +150,13 @@ If
 is compiled with the NATIVES preprocessor directive enabled, then native system
 binaries can be executed as well as PDP-11 binaries. For example:
 .Bd -literal
-	% cd $APOUT_ROOT
-	% ln -s `which vi` bin/vi	   Add vi into the filespace
-	% apout bin/sh
-	$ ls -l						 Run the PDP-11 ls
-	  ....
-	$ vi kim.c					  Run the native vi
-	$ cc -o kim kim.c			   Compile with the PDP-11 compiler
+    % cd $APOUT_ROOT
+    % ln -s `which vi` bin/vi       Add vi into the filespace
+    % apout bin/sh
+    $ ls -l                         Run the PDP-11 ls
+      ....
+    $ vi kim.c                      Run the native vi
+    $ cc -o kim kim.c               Compile with the PDP-11 compiler
 .Ed
 .Pp
 Note that native executable receive the same environment variables inherited
@@ -163,37 +174,37 @@ the list of error messages that
 .Nm apout
 can generate:
 .Bd -ragged
-	 Apout - V1 sectosixty too big
-	 Apout - can't malloc overlay!
-	 Apout - can't switch to empty overlay %d
-	 Apout - could not read 1st line of script
-	 Apout - couldn't load %s
-	 Apout - open_dir couldn't open %s
-	 Apout - out of argv space in script
-	 Apout - pid %d bad FP register used at PC 0%o
-	 Apout - pid %d bpt instruction at PC 0%o
-	 Apout - pid %d bus error at PC 0%06o
-	 Apout - pid %d emt instruction at PC 0%o
-	 Apout - pid %d halt instruction at PC 0%o
-	 Apout - pid %d illegal instruction %o at PC 0%o
-	 Apout - pid %d iot instruction at PC 0%o
-	 Apout - pid %d mark instruction at PC 0%o
-	 Apout - pid %d mfpd instruction at PC 0%o
-	 Apout - pid %d mtpd instruction at PC 0%o
-	 Apout - pid %d segmentation fault at PC 0%06o
-	 Apout - pid %d trap instruction at PC 0%o
-	 Apout - pid %d unimplemented instruction at PC 0%o
-	 Apout - pid %d unknown KE11 register 0%o
-	 Apout - pid %d waiti instruction at PC 0%o
-	 Apout - the %s syscall is not yet implemented
-	 Apout - the 2.11BSD %s syscall is not yet implemented
-	 Apout - unknown a.out format 0%o
-	 Apout - unknown magic in header: 0x%x
-	 Apout - unknown syscall %d at PC 0%o
-	 Apout cannot set the environment for the a.out %s
-	 Apout not compiled to support 1st Edition binaries
-	 Apout not compiled to support 2nd Edition binaries
-	 Apout not compiled to support 2.11BSD binaries
+   Apout - V1 sectosixty too big
+   Apout - can't malloc overlay!
+   Apout - can't switch to empty overlay %d
+   Apout - could not read 1st line of script
+   Apout - couldn't load %s
+   Apout - open_dir couldn't open %s
+   Apout - out of argv space in script
+   Apout - pid %d bad FP register used at PC 0%o
+   Apout - pid %d bpt instruction at PC 0%o
+   Apout - pid %d bus error at PC 0%06o
+   Apout - pid %d emt instruction at PC 0%o
+   Apout - pid %d halt instruction at PC 0%o
+   Apout - pid %d illegal instruction %o at PC 0%o
+   Apout - pid %d iot instruction at PC 0%o
+   Apout - pid %d mark instruction at PC 0%o
+   Apout - pid %d mfpd instruction at PC 0%o
+   Apout - pid %d mtpd instruction at PC 0%o
+   Apout - pid %d segmentation fault at PC 0%06o
+   Apout - pid %d trap instruction at PC 0%o
+   Apout - pid %d unimplemented instruction at PC 0%o
+   Apout - pid %d unknown KE11 register 0%o
+   Apout - pid %d waiti instruction at PC 0%o
+   Apout - the %s syscall is not yet implemented
+   Apout - the 2.11BSD %s syscall is not yet implemented
+   Apout - unknown a.out format 0%o
+   Apout - unknown magic in header: 0x%x
+   Apout - unknown syscall %d at PC 0%o
+   Apout cannot set the environment for the a.out %s
+   Apout not compiled to support 1st Edition binaries
+   Apout not compiled to support 2nd Edition binaries
+   Apout not compiled to support 2.11BSD binaries
 .Ed
 .Sh CAVEATS
 As far as is known, the emulation of user-mode integer instructions is correct.

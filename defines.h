@@ -1,11 +1,12 @@
 /* defines.h	- Definitions of things needed in all C files
  *
- * $Revision: 2.73 $
- * $Date: 2002/06/10 12:08:27 $
+ * $Revision: 2.75 $
+ * $Date: 2008/05/19 13:42:39 $
  */
 
 #include <sys/types.h>
 #include <sys/param.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,7 @@
 
 /* Optimisation defines */
 #ifndef INLINE
-# define INLINE
+#define INLINE
 #endif
 
 /* Special defines to enable/disable certain
@@ -37,39 +38,39 @@
  */
 
 #if defined(__FreeBSD__) && __FreeBSD__ < 3
-# define NO_GETPGID
+#define NO_GETPGID
 #endif
 
 #ifdef __FreeBSD__
-# define Reboot(x) reboot(x)
+#define Reboot(x) reboot(x)
 #endif
 
 #ifdef __linux__
-# define NO_CHFLAGS
-# define NO_STFLAGS
-# define NO_GETPGID
-# define NEED_MAP_FCNTL
-# define SIGEMT 0
-# ifndef SIGSYS
-#  define SIGSYS 0
-# endif
-# define OXTABS XTABS
-# define VDSUSP VSUSP		/* I don't think these are equivalent */
-# define O_SHLOCK 0
-# define O_EXLOCK 0
+#define NO_CHFLAGS
+#define NO_STFLAGS
+#define NO_GETPGID
+#define NEED_MAP_FCNTL
+#define SIGEMT 0
+#ifndef SIGSYS
+#define SIGSYS 0
+#endif
+#define OXTABS XTABS
+#define VDSUSP VSUSP		/* I don't think these are equivalent */
+#define O_SHLOCK 0
+#define O_EXLOCK 0
 #endif
 
 #if defined(__NetBSD__) || defined(__OpenBSD__)
-# define Reboot(x) reboot(x,NULL)
+#define Reboot(x) reboot(x,NULL)
 #endif
 
 #ifndef Reboot
-# define Reboot(x) exit(0)
+#define Reboot(x) exit(0)
 #endif
 
 #if !defined(__FreeBSD__) && !defined(__NetBSD__) && \
-	!defined(__OpenBSD__) && !defined(__linux__)
-# define NEED_INT_N
+    !defined(__OpenBSD__) && !defined(__linux__) && !defined(__APPLE__)
+#define NEED_INT_N
 #endif
 
 /* Type definitions for PDP data types. You may need to
@@ -97,22 +98,22 @@ typedef unsigned long u_int32_t;
  */
 
 #ifdef DEBUG
-# define TrapDebug(x) if (trap_debug) (void)fprintf x
-# define InstDebug(x) if (inst_debug) (void)fprintf x
-# define JsrDebug(x)  if (jsr_debug)  (void)fprintf x
-# define FpDebug(x)   if (fp_debug)   (void)fprintf x
+#define TrapDebug(x) if (trap_debug) (void)fprintf x
+#define InstDebug(x) if (inst_debug) (void)fprintf x
+#define JsrDebug(x)  if (jsr_debug)  (void)fprintf x
+#define FpDebug(x)   if (fp_debug)   (void)fprintf x
 #else
-# define TrapDebug(x)
-# define InstDebug(x)
-# define JsrDebug(x)
-# define FpDebug(x)
+#define TrapDebug(x)
+#define InstDebug(x)
+#define JsrDebug(x)
+#define FpDebug(x)
 #endif
 
-				/* Defines for -DSTREAM_BUFFERING */
+/* Defines for -DSTREAM_BUFFERING */
 #define NFILE   40		/* Number of file pointers we can buffer */
 #define ValidFD(x) ((x>=0) && (x<NFILE))
-				/* Used for opening on directories */
-#define TMP_PLATE	   "/tmp/apout_dir.XXXXXX"
+/* Used for opening on directories */
+#define TMP_PLATE       "/tmp/apout_tmp_dir.XXXXXX"
 
 
 /* Set up prototype macro for
@@ -127,7 +128,7 @@ typedef unsigned long u_int32_t;
 typedef void (*_itab) P((void));
 extern _itab itab[];		/* Instruction Table for Fast Decode. */
 
-typedef float  FLOAT;		/* For now, we use floats to do FP */
+typedef float FLOAT;		/* For now, we use floats to do FP */
 
 /* PDP processor defines. */
 
@@ -151,7 +152,7 @@ extern int CC_Z;		/* by these four values. On some */
 extern int CC_V;		/* architectures, you may get a performance */
 extern int CC_C;		/* increase by changing the size of the vars */
 
-extern FLOAT  fregs[8];		/* FP registers */
+extern FLOAT fregs[8];		/* FP registers */
 extern int FPC;			/* FP Status flags */
 extern int FPZ;
 extern int FPN;
@@ -170,11 +171,11 @@ extern u_int8_t dstbyte;	/* function calls */
 extern u_int8_t srcbyte;
 extern u_int8_t tmpbyte;
 
-				/* The following array holds the FILE pointers
-				 * that correspond to open file descriptors.
-				 * Only fds which are not ttys have
-				 * FILE * pointers
-				 */
+/* The following array holds the FILE pointers
+ * that correspond to open file descriptors.
+ * Only fds which are not ttys have
+ * FILE * pointers
+ */
 extern FILE *stream[NFILE];
 extern char *streammode[NFILE];
 
@@ -194,24 +195,24 @@ extern int Binary;		/* Type of binary this a.out is. One of: */
 #define IS_29BSD	29
 #define IS_211BSD	211
 
-				/* 2.11BSD overlay stuff */
+/* 2.11BSD overlay stuff */
 extern u_int32_t ov_changes;	/* Number of overlay changes */
 extern u_int8_t current_ov;	/* Current overlay number */
 
 #ifdef DEBUG
-				/* Debugging flags */
+/* Debugging flags */
 extern int inst_debug,		/* Print a line before each instruction */
-	trap_debug,			/* Print details of each trap */
-	jsr_debug,			/* Print out each jsr */
-	fp_debug;			/* Print out each floating-point instruction */
+       trap_debug,			/* Print details of each trap */
+       jsr_debug,			/* Print out each jsr */
+       fp_debug;			/* Print out each floating-point instruction */
 extern FILE *dbg_file;		/* Debugging output file */
 extern char *progname;		/* The program's name - used in debugging */
 #endif
 
-				/* We keep a list of signals that are pending */
+/* We keep a list of signals that are pending */
 struct our_siglist {
-		int sig;		/* Number of the signal */
-		struct our_siglist *next;
+    int sig;			/* Number of the signal */
+    struct our_siglist *next;
 };
 extern struct our_siglist *Sighead;	/* Head of the list */
 extern struct our_siglist *Sigtail;	/* Tail of the list */
@@ -362,11 +363,11 @@ extern u_int16_t *adptr;
 
 /* lli_byte() - Load a byte from the given logical ispace address. */
 #define lli_byte(addr, byte) \
-	byte = ispace[addr];
+    byte = ispace[addr];
 
 /* ll_byte() - Load a byte from the given logical address. */
 #define ll_byte(addr, byte) \
-	byte = dspace[addr];
+    byte = dspace[addr];
 
 /* sl_byte() - Store a byte at the given logical address. */
 #ifdef WRITEBASE
@@ -378,9 +379,9 @@ extern u_int16_t *adptr;
 	{ dspace[addr]= byte; }
 #endif
 #else
-				/* These versions of the macros are required */
-				/* because the KE11-A module is mapped into */
-				/* a process' memory space in 1st Edition */
+/* These versions of the macros are required */
+/* because the KE11-A module is mapped into */
+/* a process' memory space in 1st Edition */
 #define KE11LO	0177300
 #define KE11HI	0177317
 
@@ -416,13 +417,13 @@ extern u_int16_t *adptr;
 
 /* lli_byte() - Load a byte from the given logical ispace address. */
 #define lli_byte(addr, byte) \
-	byte = ispace[addr];
+    byte = ispace[addr];
 
 /* ll_byte() - Load a byte from the given logical address. */
 #define ll_byte(addr, byte) \
 	{ if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
 		byte= kell_byte(addr);					\
-		  } else byte = dspace[addr];					\
+    	  } else byte = dspace[addr];					\
 	}
 
 /* sl_byte() - Store a byte at the given logical address. */
@@ -449,7 +450,7 @@ extern u_int16_t *adptr;
 
 /* aout.c */
 int load_a_out P((const char *file, const char *origpath, int want_env))
-					/*@globals errno,stdout,stderr; @*/ ;
+/*@globals errno,stdout,stderr; @ */ ;
 #ifdef EMU211
 void do_bsd_overlay P((void));
 #endif
@@ -569,11 +570,11 @@ void dositab1 P((void));
 /* main.c */
 int main P((int argc, char **argv));
 void usage P((void));
-char * xlate_filename P((unsigned char *name));
+char *xlate_filename P((char *name));
 void set_apout_root P((char *dirname));
 
 /* magic.c */
-int special_magic P((u_int16_t *cptr));
+int special_magic P((u_int16_t * cptr));
 
 /* single.c */
 void adc P((void));
@@ -614,7 +615,7 @@ void v1trap P((void));
 
 /* bsdtrap.c */
 #ifdef EMU211
-void bsdtrap P((void))			/*@globals errno,stdout,stderr; @*/ ;
+void bsdtrap P((void)) /*@globals errno,stdout,stderr; @ */ ;
 
 /* bsd_ioctl.h */
 int trap_ioctl P((void));
