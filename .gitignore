@@ -2,7 +2,7 @@
 *.o
 apout
 docker
-
-# Vim
+do_build
 *.un~
 *.swp
+.DS_*

@@ -11,10 +11,10 @@ CC?=gcc
 # Set up the LIBS if required for your system
 #
 # These flags for doing debugging
-#APOUT_OPTIONS?= -DEMU211 -DEMUV1 -DNATIVES -DRUN_V1_RAW \
+APOUT_OPTIONS?= -DEMU211 -DEMUV1 -DNATIVES -DRUN_V1_RAW \
 	-DDEBUG -DZERO_MEMORY -DWRITEBASE
 # These flags should be fine for most cases
-APOUT_OPTIONS?= -DEMU211 -DEMUv1 -DNATIVES
+#APOUT_OPTIONS?= -DEMU211 -DEMUv1 -DNATIVES
 
 # These flags for speed
 #CFLAGS+= -DEMU211 -DNATIVES -DINLINE=inline -O2 -Winline -Wall \
@@ -41,6 +41,8 @@ SRCS=	cpu.c aout.c aout.h branch.c double.c ea.c itab.c main.c ke11a.c \
 OBJS=	aout.o branch.o bsd_ioctl.o bsd_signal.o bsdtrap.o cpu.o debug.o \
 	double.o ea.o fp.o itab.o ke11a.o magic.o main.o single.o v1trap.o \
 	v7trap.o
+
+all: apout
 
 apout: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o apout $(LIBS)
