@@ -100,11 +100,17 @@ int load_aout_header(FILE * zin, struct exec *E)
     case ANY_SCRIPT:	/* Shell script, return now */
         return (IS_UNKNOWN);
     case V1_NORMAL:
+        break;
     case ANY_NORMAL:	/* These are recognised below */
+        break;
     case ANY_ROTEXT:
+        break;
     case ANY_SPLITID:
+        break;
     case BSD_OVERLAY:
+        break;
     case BSD_ROVERLAY:
+        break;
     case A68_MAGIC:
         break;
 
@@ -122,9 +128,9 @@ int load_aout_header(FILE * zin, struct exec *E)
 
     switch (E->a_magic) {
     case A68_MAGIC:
-        if (E->a_data == A68_DATA)
+        if (E->a_data == A68_DATA) {
             return (IS_A68);
-        else {
+        } else {
             E->a_magic = UNKNOWN_AOUT;
             return (IS_UNKNOWN);
         }
@@ -142,9 +148,12 @@ int load_aout_header(FILE * zin, struct exec *E)
             return (IS_V6);
         if (E->a_magic2 == V7_M2)
             return (IS_V7);
+        if (E->a_magic2 == V7_ACK)
+            return (IS_V7);
         if (E->a_magic2 == BSD_M2)
             return (IS_211BSD);
 
+        fprintf(stderr,"Unkown a_magic2 (crt) %O\n",E->a_magic2);
         /* Still no idea, use checksum to determine */
         return (special_magic((u_int16_t *) E));
 
@@ -517,7 +526,7 @@ int load_a_out(const char *file, const char *origpath, int want_env)
             itab[i] = v7trap;
         break;
     default:
-        fprintf(stderr, "Apout - unknown Unix version for %s\n", file);
+        fprintf(stderr, "Apout - unknown Unix version for (%X) %s\n", Binary, file);
         exit(EXIT_FAILURE);
     }
 

@@ -53,4 +53,5 @@ struct exec {
 #define V2_M2		0177304	/* Doesn't apply to all, tho */
 #define V6_M2		0010600
 #define V7_M2		0016600
+#define V7_ACK		0000010
 #define BSD_M2		0162706
