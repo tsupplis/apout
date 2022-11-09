@@ -56,8 +56,8 @@ Edition UNIX will not be compiled in to the simulator. By default, EMUV1
 is disabled.
 
 
-Once you have configured apout, now type `make'. Hopefully, things will
-compile ok. You will eventually get the `apout' program.
+Once you have configured apout, now type make. Hopefully, things will
+compile ok. You will eventually get the apout program.
 
 Now go find an old PDP-11 UNIX binary, e.g 7th Edition cal, and say:
 

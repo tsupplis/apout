@@ -142,7 +142,6 @@ int load_aout_header(FILE * zin, struct exec *E)
     case ANY_NORMAL:
     case ANY_ROTEXT:
     case ANY_SPLITID:	/* Check crt0.o 2nd magic for V2/V6/V7/2.11BSD */
-        fprintf(stderr,"Unkown a_magic2 (crt) %O\n",E->a_magic2);
         if (E->a_magic2 == V2_M2)
             return (IS_V2);
         if (E->a_magic2 == V6_M2)
