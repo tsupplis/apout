@@ -31,10 +31,10 @@ LIBS= -lm
 
 # Install destinations
 PREFIX?=/usr/local
-MANDIR=$(PREFIX)/man/man1
+MANDIR=$(PREFIX)/share/man/man1
 BINDIR=$(PREFIX)/bin
 
-VERSION= apout2.3beta1
+VERSION= apout2.3.2
 SRCS=	cpu.c aout.c aout.h branch.c double.c ea.c itab.c main.c ke11a.c \
 	single.c fp.c v7trap.c bsdtrap.c defines.h v7trap.h debug.c \
 	bsdtrap.h bsd_ioctl.c bsd_signal.c magic.c v1trap.c v1trap.h
