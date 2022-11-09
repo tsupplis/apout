@@ -86,6 +86,8 @@ The following 2.11 syscalls are not handled:
 	S_SIGBLOCK, S_SIGPAUSE, S_SIGRETURN,
 	S_SIGSETMASK, S_SIGSTACK, S_SIGVEC
 
+S_OPEN does not work with directories
+
 Limitations for 1st Edition Emulation in Apout 2.3
 --------------------------------------------------
 
