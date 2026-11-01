@@ -100,6 +100,27 @@ static void conversion_tests(void)
         check("Disabled BSD control character becomes native disabled",
               native.c_cc[VINTR], _POSIX_VDISABLE);
     }
+    memset(&native, 0, sizeof(native));
+    native.c_cc[VERASE] = native.c_cc[VKILL] = _POSIX_VDISABLE;
+    to_sgttyb(&guest, &native);
+    check("Disabled erase is translated", (u_int8_t) guest.sg_erase, 0xff);
+    check("Disabled kill is translated", (u_int8_t) guest.sg_kill, 0xff);
+    to_termios(&guest, &native);
+    check("Disabled erase roundtrip", native.c_cc[VERASE], _POSIX_VDISABLE);
+    check("Disabled kill roundtrip", native.c_cc[VKILL], _POSIX_VDISABLE);
+    for (n = 0; n < 16; n++) {
+        memset(&guest, 0, sizeof(guest));
+        guest.sg_ispeed = guest.sg_ospeed = n;
+        require(to_termios(&guest, &native) == 0, "speed conversion");
+        require(to_sgttyb(&guest, &native) == 0, "speed readback");
+        check("All supported speeds roundtrip input", guest.sg_ispeed, n);
+        check("All supported speeds roundtrip output", guest.sg_ospeed, n);
+    }
+#ifdef B57600
+    require(cfsetospeed(&native, B57600) == 0, "unrepresentable native speed");
+    check("Native speed overflow is explicit", to_sgttyb(&guest, &native), -1);
+    check("Native speed overflow errno", errno, EOVERFLOW);
+#endif
 }
 
 static void pty_tests(void)

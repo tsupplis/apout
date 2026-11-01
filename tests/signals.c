@@ -99,6 +99,11 @@ static void action_tests(void)
     check("SIGACTION query returns ignored disposition", word(65528), 1);
     check("SIGACTION query returns translated mask", bsd_load_long(65530), 1UL << 30);
     check("SIGACTION query returns guest flags", word(65534), 2);
+    call(S_SIGACTION, 0, 9, 0, 04001);
+    check("SIGACTION permits querying SIGKILL", CC_C, 0);
+    check("SIGACTION reports SIGKILL default", word(04001), 0);
+    call(S_SIGACTION, 0, 17, 0, 0);
+    check("SIGACTION permits no-op SIGSTOP query", CC_C, 0);
     call(S_SIGACTION, 0, 30, 03001, 03001);
     check("SIGACTION supports aliased old and new actions", CC_C, 0);
     check("SIGACTION aliased output", word(03001), 1);
@@ -182,11 +187,51 @@ static void mask_tests(void)
     check("SIGPENDING rejects overrun", CC_C ? regs[0] : 0, EFAULT);
     require(signal(SIGUSR2, SIG_IGN) != SIG_ERR, "discard private pending signal");
     require(sigprocmask(SIG_SETMASK, &old, NULL) == 0, "restore mask");
-    for (n = 0; n < 4; n++) {
-        static const unsigned unsupported[] = {S_SIGRETURN, S_SIGALTSTACK, S_SIGSUSPEND, S_SIGVEC};
+    for (n = 0; n < 9; n++) {
+        static const unsigned unsupported[] = {
+            S_SIGRETURN, S_SIGALTSTACK, S_SIGSUSPEND, S_SIGVEC, S_SIGBLOCK,
+            S_SIGSETMASK, S_SIGPAUSE, S_SIGSTACK, S_SIGRETURN
+        };
         call(unsupported[n], 0, 0, 0, 0);
         check("Unsupported signal APIs fail explicitly", CC_C ? regs[0] : 0, ENOSYS);
     }
+}
+
+static void private_handler(int sig)
+{
+    (void) sig;
+}
+
+static void exec_tests(void)
+{
+    struct sigaction action;
+    sigset_t mask, oldmask;
+    char directory[] = "/tmp/apout-signals.XXXXXX";
+
+    require(mkdtemp(directory) != NULL, "signal exec directory");
+    snprintf((char *) &dspace[02000], 100, "%s/missing", directory);
+    call(S_EXECVE, 02000, 0, 0, 0);
+    check("Failed exec reports missing file", CC_C ? regs[0] : 0, ENOENT);
+    require(sigaction(SIGUSR1, NULL, &action) == 0, "signal after failed exec");
+    check("Failed exec preserves ignored disposition", action.sa_handler == SIG_IGN, 1);
+    require(rmdir(directory) == 0, "remove signal exec directory");
+    sigemptyset(&mask);
+    sigaddset(&mask, SIGUSR2);
+    require(sigprocmask(SIG_BLOCK, &mask, &oldmask) == 0, "mask across exec");
+    memset(&action, 0, sizeof(action));
+    sigemptyset(&action.sa_mask);
+    action.sa_handler = private_handler;
+    require(sigaction(SIGUSR2, &action, NULL) == 0, "private caught disposition");
+    call(S_SIGACTION, 0, 31, 0, 04001);
+    check("SIGACTION rejects unrepresentable native handler", CC_C ? regs[0] : 0, ENOSYS);
+    require(bsd_signal_exec() == 0, "emulated exec signal transition");
+    require(sigaction(SIGUSR1, NULL, &action) == 0, "ignored signal across exec");
+    check("Exec preserves ignored disposition", action.sa_handler == SIG_IGN, 1);
+    require(sigaction(SIGUSR2, NULL, &action) == 0, "caught signal across exec");
+    check("Exec resets caught disposition", action.sa_handler == SIG_DFL, 1);
+    require(sigprocmask(SIG_SETMASK, NULL, &mask) == 0, "query exec mask");
+    check("Exec preserves native mask", sigismember(&mask, SIGUSR2), 1);
+    require(sigprocmask(SIG_SETMASK, &oldmask, NULL) == 0, "restore exec mask");
 }
 
 static void kill_tests(void)
@@ -226,9 +271,11 @@ int main(int argc, char **argv)
     Binary = IS_211BSD;
     action_tests();
     kill_tests();
-    /* Stop before pending-signal tests until the basic signal APIs work. */
-    if (!failures)
+    /* Do not raise a default-fatal signal if the mask APIs failed. */
+    if (!failures) {
+        exec_tests();
         mask_tests();
+    }
     printf("Signals: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

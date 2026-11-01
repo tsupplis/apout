@@ -290,6 +290,16 @@ store_value:
 }
 
 
+static int8_t guest_character(cc_t value)
+{
+    return value == _POSIX_VDISABLE ? -1 : (int8_t) value;
+}
+
+static cc_t native_character(int8_t value)
+{
+    return (u_int8_t) value == 0xff ? _POSIX_VDISABLE : (u_int8_t) value;
+}
+
 static const speed_t terminal_speeds[] = {
     B0, B50, B75, B110, B134, B150, B200, B300,
     B600, B1200, B1800, B2400, B4800, B9600, B19200, B38400
@@ -314,12 +324,12 @@ static int to_sgttyb(struct tr_sgttyb *sgtb, struct termios *tios)
         return -1;
     sgtb->sg_ispeed = input;
     sgtb->sg_ospeed = output;
-    sgtb->sg_erase = tios->c_cc[VERASE];
-    sgtb->sg_kill = tios->c_cc[VKILL];
+    sgtb->sg_erase = guest_character(tios->c_cc[VERASE]);
+    sgtb->sg_kill = guest_character(tios->c_cc[VKILL]);
     sgtb->sg_flags = 0;
     if (tios->c_iflag & IXOFF)
         sgtb->sg_flags |= TR_TANDEM;
-    if (tios->c_oflag & OXTABS)
+    if ((tios->c_oflag & OXTABS) == OXTABS)
         sgtb->sg_flags |= TR_XTABS;
     if (tios->c_cflag & PARENB) {
         if (tios->c_cflag & PARODD)
@@ -359,8 +369,8 @@ static int to_termios(struct tr_sgttyb *sgtb, struct termios *tios)
     if (cfsetospeed(tios, terminal_speeds[output]) == -1 ||
         cfsetispeed(tios, terminal_speeds[input]) == -1)
         return -1;
-    tios->c_cc[VERASE] = sgtb->sg_erase;
-    tios->c_cc[VKILL] = sgtb->sg_kill;
+    tios->c_cc[VERASE] = native_character(sgtb->sg_erase);
+    tios->c_cc[VKILL] = native_character(sgtb->sg_kill);
 
     tios->c_iflag &= ~(IXOFF | ICRNL | INPCK | ISTRIP);
     tios->c_iflag |= BRKINT | IXON;
@@ -413,16 +423,6 @@ static int to_termios(struct tr_sgttyb *sgtb, struct termios *tios)
     TrapDebug((dbg_file, "\n\tto_termios: lflag is 0x%x ",
                (int) tios->c_lflag));
     return 0;
-}
-
-static int8_t guest_character(cc_t value)
-{
-    return value == _POSIX_VDISABLE ? -1 : (int8_t) value;
-}
-
-static cc_t native_character(int8_t value)
-{
-    return (u_int8_t) value == 0xff ? _POSIX_VDISABLE : (u_int8_t) value;
 }
 
 /* Convert from termios to old [l]tchars structures */
@@ -544,6 +544,12 @@ static int trap_settermios(u_int16_t fd, u_int32_t type, u_int16_t ucnt)
         i = tcsetattr(fd, TCSANOW, &tios);
         return (i);
     case TR_TIOCSLTC:
+#if VDSUSP == VSUSP
+        if ((u_int8_t) value.ltc.t_dsuspc != 0xff) {
+            errno = ENOSYS;
+            return -1;
+        }
+#endif
         tc_to_tchars(NULL, &value.ltc, &tios);
         i = tcsetattr(fd, TCSANOW, &tios);
         return (i);
