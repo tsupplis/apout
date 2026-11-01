@@ -68,6 +68,9 @@ Pathname/root translation, exec-vector bounds, the 200-entry argument limit
 and exact-fit/overflow checks for initial exec stacks are also covered.
 BSD stat outputs, resource-limit conversion and group-list bounds are tested;
 resource-limit changes run only in a child, and setgroups tests use a stub.
+Wait4 tests cover reaping, stopped/signaled children, NULL outputs and WNOHANG.
+BSD ioctl tests use a private pseudoterminal and include invalid buffers,
+canonical request codes, window sizes and failure-output preservation.
 `make test-sanitize` runs the same checks with AddressSanitizer
 and UndefinedBehaviorSanitizer (a supporting compiler is required).
 Tests use private memory, a pseudoterminal, private Unix socket paths and
@@ -109,6 +112,13 @@ the six guest resource IDs and 32-bit guest values (`0x7fffffff` for infinity);
 larger native values are reported as guest infinity. Group lists use unsigned
 16-bit IDs and reject unrepresentable native IDs without partial output.
 As in 2.11BSD, a zero-capacity getgroups call is not a native count query.
+BSD wait4 checks status/usage buffers before waiting and leaves outputs untouched
+on errors or WNOHANG without an event. Reported signals use BSD numbering; child
+overlay counts are unavailable and reported as zero. A host signal without a BSD
+equivalent returns `EOVERFLOW` if status is requested (the child may already be reaped).
+Supported BSD ioctl buffers are checked and staged; unknown requests now fail
+with `ENOTTY` rather than silently succeeding. Full BSD terminal-mode translation
+and host-to-guest process-ID virtualization remain incomplete.
 `APOUT_ROOT` is a pathname prefix, not a filesystem sandbox.
 
 ## Running binaries

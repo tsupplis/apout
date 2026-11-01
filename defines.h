@@ -516,6 +516,7 @@ void sim_init P((void));
 void bus_error P((int));
 int valid_dspace_range P((u_int16_t addr, size_t length));
 int valid_guest_string P((u_int16_t addr));
+int bsd_signal_number P((int native));
 int valid_guest_pathname P((u_int16_t addr));
 int valid_guest_exec_args P((u_int16_t argv, u_int16_t envp, int want_env));
 void seg_fault P((void));

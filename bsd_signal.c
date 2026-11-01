@@ -71,8 +71,18 @@ static int bsdsig[] = {
     SIGFPE, SIGKILL, SIGBUS, SIGSEGV, SIGSYS, SIGPIPE, SIGALRM,
     SIGTERM, SIGURG, SIGSTOP, SIGTSTP, SIGCONT, SIGCHLD, SIGTTIN,
     SIGTTOU, SIGIO, SIGXCPU, SIGXFSZ, SIGVTALRM, SIGPROF, SIGWINCH,
-    SIGUSR1, SIGUSR2, 0
+    0, SIGUSR1, SIGUSR2
 };
+
+int bsd_signal_number(int native)
+{
+    int i;
+    for (i = 1; i < NBSDSIG; i++)
+        if (bsdsig[i] && bsdsig[i] == native)
+            return i;
+    errno = EOVERFLOW;
+    return -1;
+}
 
 /* We keep a set of struct sigactions
  * for each 2.11BSD signal

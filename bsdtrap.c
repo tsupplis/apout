@@ -95,6 +95,53 @@ static int32_t bsd_limit_value(rlim_t value)
     return value == RLIM_INFINITY || value > INT32_MAX ? INT32_MAX : (int32_t) value;
 }
 
+static void bsd_store_rusage(unsigned addr, const struct rusage *use, unsigned overlays)
+{
+    struct tr_rusage value;
+    char *buf, *buf2;
+
+    memset(&value, 0, sizeof(value));
+    copylong(value.ru_utime.tv_sec, use->ru_utime.tv_sec);
+    copylong(value.ru_utime.tv_usec, use->ru_utime.tv_usec);
+    copylong(value.ru_stime.tv_sec, use->ru_stime.tv_sec);
+    copylong(value.ru_stime.tv_usec, use->ru_stime.tv_usec);
+    copylong(value.ru_maxrss, use->ru_maxrss);
+    copylong(value.ru_ixrss, use->ru_ixrss);
+    copylong(value.ru_idrss, use->ru_idrss);
+    copylong(value.ru_isrss, use->ru_isrss);
+    copylong(value.ru_minflt, use->ru_minflt);
+    copylong(value.ru_majflt, use->ru_majflt);
+    copylong(value.ru_nswap, use->ru_nswap);
+    copylong(value.ru_inblock, use->ru_inblock);
+    copylong(value.ru_oublock, use->ru_oublock);
+    copylong(value.ru_msgsnd, use->ru_msgsnd);
+    copylong(value.ru_msgrcv, use->ru_msgrcv);
+    copylong(value.ru_nsignals, use->ru_nsignals);
+    copylong(value.ru_nvcsw, use->ru_nvcsw);
+    copylong(value.ru_nivcsw, use->ru_nivcsw);
+    memcpy(&dspace[addr], &value, sizeof(value));
+    bsd_store_long(addr + offsetof(struct tr_rusage, ru_ovly), overlays);
+}
+
+static int bsd_wait_status(int status)
+{
+    int sig;
+    if (WIFEXITED(status))
+        return WEXITSTATUS(status) << 8;
+    if (WIFSTOPPED(status)) {
+        sig = bsd_signal_number(WSTOPSIG(status));
+        return sig == -1 ? -1 : (sig << 8) | 0177;
+    }
+    sig = bsd_signal_number(WTERMSIG(status));
+    if (sig == -1)
+        return -1;
+#ifdef WCOREDUMP
+    if (WCOREDUMP(status))
+        sig |= 0200;
+#endif
+    return sig;
+}
+
 static int bsd_load_sockaddr(u_int16_t addr, unsigned length,
                              struct sockaddr_storage *value, socklen_t *size)
 {
@@ -184,7 +231,6 @@ void bsdtrap()
 {
     int i, j, len, pid, pfd[2];
     char *buf, *buf2;
-    int16_t *shortptr;
     long larg1;
     char *fmode;		/* used with fdopen only */
     struct stat stbuf;		/* used in STAT */
@@ -200,12 +246,11 @@ void bsdtrap()
     gid_t *gidset;		/* used in GETGROUPS */
     struct rlimit rlp;		/* used in rlimit calls */
     int32_t limit_cur, limit_max;
-    struct tr_rusage guest_use, *tr_use = &guest_use;
     struct rusage use;		/* used in getrusage */
     struct iovec ivec[16];	/* 2.11BSD's kernel vector limit. */
     struct tr_iovec vector;
     u_int16_t guest_fds[2];
-    u_int16_t guest_gid;
+    u_int16_t guest_gid, guest_status;
     size_t total;
 
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
@@ -802,13 +847,34 @@ dostat:
             break;
         regs[1] = pid;
         break;
-    case S_WAIT4:		/* Definitely incomplete */
+    case S_WAIT4:
         TrapDebug((dbg_file, "on pid %d options %d ", sarg1, uarg3));
-        if (uarg4)
-            TrapDebug((dbg_file, " rusage on!!! "));
-        shortptr = (int16_t *) & dspace[uarg2];
-        i = wait4(sarg1, &j, uarg3, 0);
-        *shortptr = j;
+        if (uarg3 & ~3) {
+            i = -1;
+            errno = EINVAL;
+            break;
+        }
+        if ((uarg2 && !valid_dspace_range(uarg2, 2)) ||
+            (uarg4 && !valid_dspace_range(uarg4, sizeof(struct tr_rusage)))) {
+            i = -1;
+            break;
+        }
+        len = (uarg3 & 1 ? WNOHANG : 0) | (uarg3 & 2 ? WUNTRACED : 0);
+        memset(&use, 0, sizeof(use));
+        i = wait4(sarg1, &j, len, uarg4 ? &use : NULL);
+        if (i > 0) {
+            if (uarg2) {
+                pid = bsd_wait_status(j);
+                if (pid == -1) {
+                    i = -1;
+                    break;
+                }
+                guest_status = pid;
+                memcpy(&dspace[uarg2], &guest_status, 2);
+            }
+            if (uarg4 && !WIFSTOPPED(j))
+                bsd_store_rusage(uarg4, &use, 0);
+        }
         break;
     case S_FORK:		/* DONE */
     case S_VFORK:		/* DONE */
@@ -1079,7 +1145,7 @@ dostat:
         break;
     case S_GETRUSAGE:
         TrapDebug((dbg_file, "arg1 %d pointer 0%o ", sarg1, uarg2));
-        if (!valid_dspace_range(uarg2, sizeof(guest_use))) {
+        if (!valid_dspace_range(uarg2, sizeof(struct tr_rusage))) {
             i = -1;
             break;
         }
@@ -1087,27 +1153,7 @@ dostat:
         if (i == -1)
             break;
 
-        memset(tr_use, 0, sizeof(*tr_use));
-        copylong(tr_use->ru_utime.tv_sec, use.ru_utime.tv_sec);
-        copylong(tr_use->ru_utime.tv_usec, use.ru_utime.tv_usec);
-        copylong(tr_use->ru_stime.tv_sec, use.ru_stime.tv_sec);
-        copylong(tr_use->ru_stime.tv_usec, use.ru_stime.tv_usec);
-        copylong(tr_use->ru_maxrss, use.ru_maxrss);
-        copylong(tr_use->ru_ixrss, use.ru_ixrss);
-        copylong(tr_use->ru_idrss, use.ru_idrss);
-        copylong(tr_use->ru_isrss, use.ru_isrss);
-        copylong(tr_use->ru_minflt, use.ru_minflt);
-        copylong(tr_use->ru_majflt, use.ru_majflt);
-        copylong(tr_use->ru_ovly, ov_changes);
-        copylong(tr_use->ru_nswap, use.ru_nswap);
-        copylong(tr_use->ru_inblock, use.ru_inblock);
-        copylong(tr_use->ru_oublock, use.ru_oublock);
-        copylong(tr_use->ru_msgsnd, use.ru_msgsnd);
-        copylong(tr_use->ru_msgrcv, use.ru_msgrcv);
-        copylong(tr_use->ru_nsignals, use.ru_nsignals);
-        copylong(tr_use->ru_nvcsw, use.ru_nvcsw);
-        copylong(tr_use->ru_nivcsw, use.ru_nivcsw);
-        memcpy(&dspace[uarg2], tr_use, sizeof(*tr_use));
+        bsd_store_rusage(uarg2, &use, ov_changes);
         break;
     default:
         if ((ir & 0xff) > S_GETSOCKNAME) {

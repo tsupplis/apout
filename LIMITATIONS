@@ -87,6 +87,14 @@ Resource-limit structures use bounded 32-bit guest conversion and guest resource
 IDs; native infinity or values above 0x7fffffff report guest infinity.
 Group lists are bounds-checked and use unsigned 16-bit IDs; native IDs that
 cannot fit return EOVERFLOW rather than being truncated.
+wait4 bounds-checks optional status/resource outputs before waiting, translates
+exit/stopped/signal status, and preserves outputs on errors or WNOHANG with no
+event. Child overlay counts are not available and report zero. Unrepresentable
+host signals return EOVERFLOW when status is requested; the child may already
+have been reaped. Host process IDs are not virtualized to fit guest IDs.
+Supported ioctl buffers are bounds-checked and staged. Canonical BSD window-size
+and terminal-setting requests are recognized; unknown requests return ENOTTY.
+Full BSD terminal-mode flag translation remains incomplete.
 Unix and IPv4 socket-address headers are translated, with BSD copied-length
 semantics on output truncation. Unix socket paths still use native pathname
 handling and native path-length limits; other historical address-family layouts

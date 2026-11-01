@@ -12,6 +12,8 @@ static int test_setgroups(size_t count, const gid_t *groups);
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/wait.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 static u_int16_t imem[PDP_MEM_SIZE / 2], dmem[PDP_MEM_SIZE / 2];
 static unsigned checks, failures;
@@ -867,6 +869,217 @@ static void limit_child_tests(void)
           WIFEXITED(status) ? WEXITSTATUS(status) : -1, 0);
 }
 
+static void wait_tests(void)
+{
+    int pipes[2], status;
+    pid_t child;
+    char byte;
+
+    require(pipe(pipes) == 0, "wait test pipe");
+    child = fork();
+    require(child != -1, "wait test child");
+    if (child == 0) {
+        close(pipes[1]);
+        if (read(pipes[0], &byte, 1) != 1)
+            _exit(99);
+        _exit(42);
+    }
+    require(close(pipes[0]) == 0, "close wait read end");
+    memset(&dspace[03000], 0x55, 2);
+    memset(&dspace[04000], 0x55, sizeof(struct tr_rusage));
+    syscall_test(S_WAIT4, 0177777, 03000, 1, 04000);
+    check("WAIT4 WNOHANG returns zero for blocked child", CC_C ? -1 : regs[0], 0);
+    check("WAIT4 WNOHANG preserves status", get16(03000), 0x5555);
+    check("WAIT4 WNOHANG preserves usage", get32(04000), 0x55555555);
+    syscall_test(S_WAIT4, 0177777, 65535, 1, 04000);
+    check("WAIT4 rejects status overrun before reaping", CC_C ? regs[0] : 0, EFAULT);
+    syscall_test(S_WAIT4, 0177777, 03000, 1, 65530);
+    check("WAIT4 rejects usage overrun before reaping", CC_C ? regs[0] : 0, EFAULT);
+    syscall_test(S_WAIT4, 0177777, 03000, 4, 04000);
+    check("WAIT4 rejects unsupported option", CC_C ? regs[0] : 0, EINVAL);
+    check("WAIT4 invalid calls preserve status", get16(03000), 0x5555);
+    check("WAIT4 invalid calls preserve usage", get32(04000), 0x55555555);
+    require(write(pipes[1], "x", 1) == 1 && close(pipes[1]) == 0, "release child");
+    memset(&dspace[03000], 0x55, 4);
+    memset(&dspace[04000], 0x55, sizeof(struct tr_rusage) + 2);
+    syscall_test(S_WAIT4, 0177777, 03001, 0, 04001);
+    check("WAIT4 reaps child", CC_C ? -1 : regs[0], (u_int16_t) child);
+    check("WAIT4 encodes exit status", get16(03001), 42 << 8);
+    check("WAIT4 supplies child usage", get32(04001) >= 0 && get32(04001) != 0x55555555, 1);
+    check("WAIT4 status leading canary", dspace[03000], 0x55);
+    check("WAIT4 status trailing canary", dspace[03003], 0x55);
+    check("WAIT4 usage leading canary", dspace[04000], 0x55);
+    check("WAIT4 usage trailing canary", dspace[04001 + sizeof(struct tr_rusage)], 0x55);
+    check("WAIT4 usage microseconds", get32(04005) >= 0 && get32(04005) < 1000000, 1);
+    check("WAIT4 does not report parent overlays",
+          get32(04001 + offsetof(struct tr_rusage, ru_ovly)), 0);
+    memset(&dspace[03000], 0x55, 2);
+    memset(&dspace[04000], 0x55, sizeof(struct tr_rusage));
+    syscall_test(S_WAIT4, 0177777, 03000, 0, 04000);
+    check("WAIT4 reports no children", CC_C ? regs[0] : 0, ECHILD);
+    check("WAIT4 error preserves status", get16(03000), 0x5555);
+    check("WAIT4 error preserves usage", get32(04000), 0x55555555);
+    require(waitpid(child, &status, WNOHANG) == -1 && errno == ECHILD, "child reaped");
+
+    child = fork();
+    require(child != -1, "wait null child");
+    if (child == 0)
+        _exit(0);
+    dspace[0] = 0x55;
+    syscall_test(S_WAIT4, 0177777, 0, 0, 0);
+    check("WAIT4 accepts NULL outputs", CC_C ? -1 : regs[0], (u_int16_t) child);
+    check("WAIT4 NULL outputs preserve address zero", dspace[0], 0x55);
+
+    child = fork();
+    require(child != -1, "wait boundary child");
+    if (child == 0)
+        _exit(7);
+    syscall_test(S_WAIT4, 0177777, 65534, 0, 65534 - sizeof(struct tr_rusage));
+    check("WAIT4 accepts exact memory boundary", CC_C ? -1 : regs[0], (u_int16_t) child);
+    check("WAIT4 boundary status", get16(65534), 7 << 8);
+
+    child = fork();
+    require(child != -1, "wait stopped child");
+    if (child == 0) {
+        signal(SIGUSR1, SIG_DFL);
+        raise(SIGSTOP);
+        raise(SIGUSR1);
+        _exit(99);
+    }
+    memset(&dspace[04000], 0x55, sizeof(struct tr_rusage));
+    syscall_test(S_WAIT4, 0177777, 03001, 2, 04000);
+    check("WAIT4 maps WUNTRACED option", CC_C ? -1 : regs[0], (u_int16_t) child);
+    check("WAIT4 maps stopped signal to BSD", get16(03001), (17 << 8) | 0177);
+    check("WAIT4 stopped child preserves usage", get32(04000), 0x55555555);
+    require(kill(child, SIGCONT) == 0, "resume wait child");
+    syscall_test(S_WAIT4, 0177777, 03001, 0, 04000);
+    check("WAIT4 reaps signaled child", CC_C ? -1 : regs[0], (u_int16_t) child);
+    check("WAIT4 maps SIGUSR1 to BSD signal 30", get16(03001), 30);
+    check("WAIT4 preserves core dump flag", bsd_wait_status(SIGQUIT | 0200), 3 | 0200);
+    check("WAIT4 maps SIGBUS", bsd_wait_status(SIGBUS), 10);
+    check("WAIT4 maps SIGUSR2", bsd_wait_status(SIGUSR2), 31);
+    check("BSD signal map rejects unrepresentable host signal", bsd_signal_number(INT32_MAX), -1);
+    check("BSD signal map error", errno, EOVERFLOW);
+}
+
+static void ioctl_tests(void)
+{
+    static const u_int32_t requests[] = {
+        0x40067408, 0x80067409, 0x8006740a, 0x80067411,
+        0x40027400, 0x80027401, 0x40067412, 0x40067474,
+        0x80067475, 0x40087468, 0x80087467, 0x8002667b,
+        0x4002746a, 0x40027477, 0x80027476
+    };
+    static const u_int32_t getters[] = {
+        0x40067408, 0x40067412, 0x40067474, 0x40087468
+    };
+    static const u_int32_t setters[] = {
+        0x80067409, 0x8006740a, 0x80067411, 0x80027401,
+        0x80067475, 0x80087467, 0x8002667b, 0x80027476
+    };
+    static const u_int32_t word_getters[] = {0x40027400, 0x4002746a, 0x40027477};
+    static const unsigned long native_getters[] = {TIOCGETD, TIOCMGET, TIOCGPGRP};
+    struct winsize expected = {24, 80, 640, 480}, actual;
+    struct termios before, after;
+    int master = posix_openpt(O_RDWR | O_NOCTTY), slave;
+    char *name;
+    unsigned n, k, size;
+    int native_value, result, error;
+    unsigned char saved[8];
+    u_int32_t request;
+
+    require(master != -1 && grantpt(master) == 0 && unlockpt(master) == 0, "ioctl PTY");
+    name = ptsname(master);
+    require(name != NULL && (slave = open(name, O_RDWR | O_NOCTTY)) != -1, "ioctl slave");
+    memcpy(&dspace[03001], &expected, sizeof(expected));
+    syscall_test(S_IOCTL, slave, 0x8008, 0x7467, 03001);
+    check("IOCTL accepts canonical BSD window setter", CC_C, 0);
+    require(ioctl(slave, TIOCGWINSZ, &actual) == 0, "get private window");
+    check("IOCTL window setter applies row count", actual.ws_row, expected.ws_row);
+    check("IOCTL window setter applies column count", actual.ws_col, expected.ws_col);
+    for (n = 0; n < sizeof(requests) / sizeof(requests[0]); n++) {
+        request = requests[n];
+        size = (request >> 16) & 0x7f;
+        syscall_test(S_IOCTL, slave, request >> 16, request, 0);
+        check("IOCTL rejects NULL buffer", CC_C ? regs[0] : 0, EFAULT);
+        syscall_test(S_IOCTL, slave, request >> 16, request, PDP_MEM_SIZE - size + 1);
+        check("IOCTL rejects buffer overrun", CC_C ? regs[0] : 0, EFAULT);
+    }
+    require(ioctl(slave, TIOCGWINSZ, &actual) == 0, "window after invalid ioctls");
+    check("Invalid IOCTL setters preserve native window", actual.ws_row, expected.ws_row);
+    for (n = 0; n < sizeof(getters) / sizeof(getters[0]); n++) {
+        request = getters[n];
+        size = (request >> 16) & 0x7f;
+        memset(&dspace[03000], 0x55, 10);
+        syscall_test(S_IOCTL, slave, request >> 16, request, 03001);
+        check("IOCTL getter accepts byte-aligned output", CC_C, 0);
+        check("IOCTL getter leading canary", dspace[03000], 0x55);
+        check("IOCTL getter trailing canary", dspace[03001 + size], 0x55);
+        memcpy(saved, &dspace[03001], size);
+        syscall_test(S_IOCTL, 0177777, request >> 16, request, 03001);
+        check("IOCTL getter propagates native failure", CC_C ? regs[0] : 0, EBADF);
+        check("IOCTL getter preserves output on failure", memcmp(saved, &dspace[03001], size), 0);
+        syscall_test(S_IOCTL, slave, request >> 16, request, PDP_MEM_SIZE - size);
+        check("IOCTL getter accepts exact memory boundary", CC_C, 0);
+    }
+    for (n = 0; n < sizeof(word_getters) / sizeof(word_getters[0]); n++) {
+        request = word_getters[n];
+        result = ioctl(slave, native_getters[n], &native_value);
+        error = errno;
+        memset(&dspace[03000], 0x55, 4);
+        syscall_test(S_IOCTL, slave, request >> 16, request, 03001);
+        check("IOCTL word getter matches native result",
+              CC_C ? -(long) regs[0] : 0, result == -1 ? -error : 0);
+        check("IOCTL word getter stages native integer",
+              get16(03001), result == -1 ? 0x5555 : (u_int16_t) native_value);
+        check("IOCTL word getter leading canary", dspace[03000], 0x55);
+        check("IOCTL word getter trailing canary", dspace[03003], 0x55);
+        syscall_test(S_IOCTL, 0177777, request >> 16, request, 03001);
+        check("IOCTL word getter reports bad descriptor", CC_C ? regs[0] : 0, EBADF);
+    }
+    for (n = 0; n < sizeof(setters) / sizeof(setters[0]); n++) {
+        request = setters[n];
+        size = (request >> 16) & 0x7f;
+        memset(&dspace[03001], 0, size);
+        memcpy(saved, &dspace[03001], size);
+        syscall_test(S_IOCTL, 0177777, request >> 16, request, 03001);
+        check("IOCTL canonical setter dispatches native failure", CC_C ? regs[0] : 0, EBADF);
+        check("IOCTL setter failure preserves input", memcmp(saved, &dspace[03001], size), 0);
+    }
+    syscall_test(S_IOCTL, slave, 0x4008, 0x7468, 03001);
+    check("IOCTL encodes window dimensions",
+          get16(03001) == 24 && get16(03003) == 80 &&
+          get16(03005) == 640 && get16(03007) == 480, 1);
+    put16(65528, 25);
+    put16(65530, 81);
+    put16(65532, 641);
+    put16(65534, 481);
+    syscall_test(S_IOCTL, slave, 0x8008, 0x7467, 65528);
+    check("IOCTL window setter accepts exact memory boundary", CC_C, 0);
+    require(ioctl(slave, TIOCGWINSZ, &actual) == 0, "window boundary verification");
+    check("IOCTL boundary window dimensions",
+          actual.ws_row == 25 && actual.ws_col == 81 &&
+          actual.ws_xpixel == 641 && actual.ws_ypixel == 481, 1);
+    require(tcgetattr(slave, &before) == 0, "private terminal before characters");
+    for (k = 0; k < 2; k++) {
+        unsigned getcode = k ? 0x7474 : 0x7412;
+        unsigned setcode = k ? 0x7475 : 0x7411;
+        syscall_test(S_IOCTL, slave, 0x4006, getcode, 03001);
+        memcpy(saved, &dspace[03001], 6);
+        syscall_test(S_IOCTL, slave, 0x8006, setcode, 03001);
+        check("IOCTL character setter accepts byte-aligned input", CC_C, 0);
+        check("IOCTL character setter preserves input", memcmp(saved, &dspace[03001], 6), 0);
+    }
+    require(tcgetattr(slave, &after) == 0, "private terminal after characters");
+    check("IOCTL character roundtrip preserves interrupt", after.c_cc[VINTR], before.c_cc[VINTR]);
+    syscall_test(S_IOCTL, slave, 0x2000, 0x6601, 65535);
+    check("IOCTL FIOCLEX ignores nonexistent buffer", CC_C, 0);
+    check("IOCTL FIOCLEX sets close-on-exec", !!(fcntl(slave, F_GETFD) & FD_CLOEXEC), 1);
+    syscall_test(S_IOCTL, slave, 0x1234, 0x5678, 0);
+    check("IOCTL rejects unknown request", CC_C ? regs[0] : 0, ENOTTY);
+    require(close(slave) == 0 && close(master) == 0, "close ioctl PTY");
+}
+
 int main(int argc, char **argv)
 {
     (void) argc;
@@ -886,6 +1099,8 @@ int main(int argc, char **argv)
     pathname_tests();
     structure_tests();
     limit_child_tests();
+    wait_tests();
+    ioctl_tests();
     printf("BSD: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

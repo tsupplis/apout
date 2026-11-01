@@ -17,7 +17,7 @@
 /* First the list of ioctls handled so far */
 #define TR_FIOCLEX	0x20006601	/* 0x2 is void */
 #define TR_TIOCGETP	0x40067408	/* 0x4 is a read */
-#define TR_TIOCSETP	0x40067409	/* 0x8 is a write */
+#define TR_TIOCSETP	0x80067409	/* 0x8 is a write */
 #define	TR_TIOCSETN	0x8006740a
 #define	TR_TIOCSETC	0x80067411
 #define TR_TIOCGETD	0x40027400
@@ -26,7 +26,7 @@
 #define TR_TIOCGLTC	0x40067474
 #define TR_TIOCSLTC	0x80067475
 #define TR_TIOCGWINSZ	0x40087468
-#define TR_TIOCSWINSZ	0x40027467
+#define TR_TIOCSWINSZ	0x80087467
 #define TR_FIOSETOWN	0x8002667b
 #define TR_TIOCMGET	0x4002746a
 #define TR_TIOCGPGRP	0x40027477
@@ -114,14 +114,42 @@ static int trap_settermios(u_int16_t fd, u_int32_t type, u_int16_t ucnt);
 int trap_ioctl()
 {
     int i, val;
-    long larg1;
+    u_int32_t larg1;
+    size_t buffer_size = 0;
 #ifdef DEBUG
-    u_int8_t size, letter, value;
+    u_int8_t size = 0, letter, value;
 #endif
-    int16_t *shortptr;
-    struct winsize *winptr;
+    int16_t guest_value;
+    u_int16_t dimensions[4];
+    struct winsize window;
 
-    larg1 = (sarg2 << 16) | uarg3;
+    larg1 = ((u_int32_t) uarg2 << 16) | uarg3;
+
+    switch (larg1) {
+    case TR_TIOCGETP:
+    case TR_TIOCGETC:
+    case TR_TIOCGLTC:
+    case TR_TIOCSETP:
+    case TR_TIOCSETN:
+    case TR_TIOCSETC:
+    case TR_TIOCSLTC:
+        buffer_size = 6;
+        break;
+    case TR_TIOCGETD:
+    case TR_TIOCSETD:
+    case TR_TIOCGPGRP:
+    case TR_TIOCSPGRP:
+    case TR_FIOSETOWN:
+    case TR_TIOCMGET:
+        buffer_size = 2;
+        break;
+    case TR_TIOCGWINSZ:
+    case TR_TIOCSWINSZ:
+        buffer_size = 8;
+        break;
+    }
+    if (buffer_size && !valid_dspace_range(uarg4, buffer_size))
+        return -1;
 
 #ifdef DEBUG
     if (trap_debug) {
@@ -176,7 +204,7 @@ int trap_ioctl()
             fprintf(dbg_file, "TIOCSPGRP ");
             break;
         default:
-            fprintf(dbg_file, "0x%lx ", larg1);
+            fprintf(dbg_file, "0x%lx ", (unsigned long) larg1);
 
             value = larg1 & 0xff;
             letter = (larg1 >> 8) & 0xff;
@@ -210,53 +238,52 @@ int trap_ioctl()
         i = ioctl(uarg1, FIOCLEX, NULL);
         break;
     case TR_TIOCGETD:
-        shortptr = (int16_t *) & dspace[uarg4];
         i = ioctl(uarg1, TIOCGETD, &val);
-        if (i == 0)
-            *shortptr = val;
-        break;
+        goto store_value;
     case TR_TIOCGPGRP:
-        shortptr = (int16_t *) & dspace[uarg4];
         i = ioctl(uarg1, TIOCGPGRP, &val);
-        if (i == 0)
-            *shortptr = val;
+        goto store_value;
+    case TR_TIOCMGET:
+        i = ioctl(uarg1, TIOCMGET, &val);
+store_value:
+        if (i == 0) {
+            guest_value = val;
+            memcpy(&dspace[uarg4], &guest_value, 2);
+        }
         break;
     case TR_TIOCSPGRP:
-        shortptr = (int16_t *) & dspace[uarg4];
-        val = *shortptr;
-        i = ioctl(uarg1, TIOCSPGRP, &val);
-        break;
     case TR_TIOCSETD:
-        shortptr = (int16_t *) & dspace[uarg4];
-        val = *shortptr;
-        i = ioctl(uarg1, TIOCSETD, &val);
-        break;
     case TR_FIOSETOWN:
-        shortptr = (int16_t *) & dspace[uarg4];
-        val = *shortptr;
-        /* Something wrong here, wonder why! */
-        TrapDebug((dbg_file, "fd %d val %d ", uarg1, val));
-        i = ioctl(uarg1, FIOSETOWN, &val);
-        break;
-    case TR_TIOCMGET:
-        shortptr = (int16_t *) & dspace[uarg4];
-        i = ioctl(uarg1, TIOCMGET, &val);
-        if (i == 0)
-            *shortptr = val;
+        memcpy(&guest_value, &dspace[uarg4], 2);
+        val = guest_value;
+        i = ioctl(uarg1, larg1 == TR_TIOCSPGRP ? TIOCSPGRP :
+                  larg1 == TR_TIOCSETD ? TIOCSETD : FIOSETOWN, &val);
         break;
 
     case TR_TIOCGWINSZ:
-        /* 2.11BSD and POSIX winsize the same! */
-        winptr = (struct winsize *) &dspace[uarg4];
-        i = ioctl(uarg1, TIOCGWINSZ, winptr);
+        memset(&window, 0, sizeof(window));
+        i = ioctl(uarg1, TIOCGWINSZ, &window);
+        if (i == 0) {
+            dimensions[0] = window.ws_row;
+            dimensions[1] = window.ws_col;
+            dimensions[2] = window.ws_xpixel;
+            dimensions[3] = window.ws_ypixel;
+            memcpy(&dspace[uarg4], dimensions, sizeof(dimensions));
+        }
         break;
     case TR_TIOCSWINSZ:
-        winptr = (struct winsize *) &dspace[uarg4];
-        i = ioctl(uarg1, TIOCSWINSZ, winptr);
+        memcpy(dimensions, &dspace[uarg4], sizeof(dimensions));
+        memset(&window, 0, sizeof(window));
+        window.ws_row = dimensions[0];
+        window.ws_col = dimensions[1];
+        window.ws_xpixel = dimensions[2];
+        window.ws_ypixel = dimensions[3];
+        i = ioctl(uarg1, TIOCSWINSZ, &window);
         break;
 
     default:
-        i = 0;
+        errno = ENOTTY;
+        i = -1;
     }
     return (i);
 }
@@ -603,73 +630,74 @@ static void tc_to_tchars(struct tr_tchars *tc, struct tr_ltchars *ltc,
 static int trap_gettermios(u_int16_t fd, u_int32_t type, u_int16_t ucnt)
 {
     struct termios tios;
-    struct tr_sgttyb *sgtb;
-    struct tr_tchars *tc;
-    struct tr_ltchars *ltc;
+    union {
+        struct tr_sgttyb sg;
+        struct tr_tchars tc;
+        struct tr_ltchars ltc;
+    } value;
     int i;
 
-    if (ucnt == 0)
+    if (!valid_dspace_range(ucnt, 6))
         return -1;
     i = tcgetattr(fd, &tios);
     if (i == -1)
         return i;
-    CLR_CC_C();
+    memset(&value, 0, sizeof(value));
 
     switch (type) {
     case TR_TIOCGETP:
-        sgtb = (struct tr_sgttyb *) &dspace[ucnt];
-        to_sgttyb(sgtb, &tios);
-        return 0;
+        to_sgttyb(&value.sg, &tios);
+        break;
     case TR_TIOCGETC:
-        tc = (struct tr_tchars *) &dspace[ucnt];
-        to_tchars(tc, NULL, &tios);
-        return 0;
+        to_tchars(&value.tc, NULL, &tios);
+        break;
     case TR_TIOCGLTC:
-        ltc = (struct tr_ltchars *) &dspace[ucnt];
-        to_tchars(NULL, ltc, &tios);
-        return 0;
+        to_tchars(NULL, &value.ltc, &tios);
+        break;
+    default:
+        errno = EINVAL;
+        return -1;
     }
-    /* Unknown type, should never get here */
-    return -1;
+    memcpy(&dspace[ucnt], &value, 6);
+    return 0;
 }
 
 /* Handle most set ioctls that deal with termios stuff */
 static int trap_settermios(u_int16_t fd, u_int32_t type, u_int16_t ucnt)
 {
     struct termios tios;
-    struct tr_sgttyb *sgtb;
-    struct tr_tchars *tc;
-    struct tr_ltchars *ltc;
+    union {
+        struct tr_sgttyb sg;
+        struct tr_tchars tc;
+        struct tr_ltchars ltc;
+    } value;
     int i;
 
-    if (ucnt == 0)
+    if (!valid_dspace_range(ucnt, 6))
         return -1;
+    memcpy(&value, &dspace[ucnt], 6);
     i = tcgetattr(fd, &tios);
     if (i == -1)
         return i;
     switch (type) {
     case TR_TIOCSETP:
-        sgtb = (struct tr_sgttyb *) &dspace[ucnt];
-        to_termios(sgtb, &tios);
+        to_termios(&value.sg, &tios);
         i = tcsetattr(fd, TCSANOW, &tios);
         return (i);
     case TR_TIOCSETN:
-        sgtb = (struct tr_sgttyb *) &dspace[ucnt];
-        to_termios(sgtb, &tios);
+        to_termios(&value.sg, &tios);
         i = tcsetattr(fd, TCSADRAIN, &tios);
         return (i);
     case TR_TIOCSETC:
-        tc = (struct tr_tchars *) &dspace[ucnt];
-        tc_to_tchars(tc, NULL, &tios);
+        tc_to_tchars(&value.tc, NULL, &tios);
         i = tcsetattr(fd, TCSANOW, &tios);
         return (i);
     case TR_TIOCSLTC:
-        ltc = (struct tr_ltchars *) &dspace[ucnt];
-        tc_to_tchars(NULL, ltc, &tios);
+        tc_to_tchars(NULL, &value.ltc, &tios);
         i = tcsetattr(fd, TCSANOW, &tios);
         return (i);
     }
-    /* Unknown type, should never get here */
+    errno = EINVAL;
     return -1;
 }
 #endif				/* EMU211 */
