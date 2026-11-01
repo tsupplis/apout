@@ -79,7 +79,8 @@ static char *default_envp[4] = {
 static int default_envc = 4;
 
 /* Prototypes */
-static void set_arg_env(int want_env);
+static int arg_env_start(int want_env, unsigned floor, int binary);
+static int set_arg_env(int want_env, unsigned floor);
 
 
 /* Load the a.out header from the given file pointer, and return it.
@@ -255,8 +256,9 @@ int load_a_out(const char *file, const char *origpath, int want_env)
     FILE *zin;
     struct exec e;
     u_int8_t *ibase, *dbase, *bbase;	/* Instruction, data, bss bases */
-    u_int16_t size;
-    int i;
+    unsigned size, text_base, data_base, bss_base, write_base, floor;
+    u_int8_t *new_ispace, *new_dspace;
+    int i, loaded_binary;
 #ifdef EMU211
     int j;
 #endif
@@ -273,13 +275,13 @@ int load_a_out(const char *file, const char *origpath, int want_env)
     if ((zin = fopen(file, "r")) == NULL)	/* Open the file */
         return (-1);
 
-    Binary = load_aout_header(zin, &e);	/* Determine a.out & Unix type */
+    loaded_binary = load_aout_header(zin, &e);
 
     if (e.a_magic == ANY_SCRIPT) {	/* Shell script, run that */
         return (load_script(file, origpath, zin, want_env));
     }
 #ifndef EMU211
-    if (Binary == IS_211BSD) {
+    if (loaded_binary == IS_211BSD) {
         (void) fprintf(stderr,
                        "Apout not compiled to support 2.11BSD binaries\n");
         (void) fclose(zin);
@@ -287,13 +289,13 @@ int load_a_out(const char *file, const char *origpath, int want_env)
     }
 #endif
 #ifndef EMUV1
-    if (Binary == IS_V1) {
+    if (loaded_binary == IS_V1) {
         (void) fprintf(stderr,
                        "Apout not compiled to support 1st Edition binaries\n");
         (void) fclose(zin);
         return (-1);
     }
-    if (Binary == IS_V2) {
+    if (loaded_binary == IS_V2) {
         (void) fprintf(stderr,
                        "Apout not compiled to support 2nd Edition binaries\n");
         (void) fclose(zin);
@@ -329,7 +331,7 @@ int load_a_out(const char *file, const char *origpath, int want_env)
         if ((zin = fopen(file, "r")) == NULL)	/* reopen the file */
             return (-1);
         e.a_magic = V1_RAW;
-        Binary = IS_V1;
+        loaded_binary = IS_V1;
 #else
         (void) fprintf(stderr, "Apout - unknown a.out file %s\n", file);
         return (-1);
@@ -340,7 +342,7 @@ int load_a_out(const char *file, const char *origpath, int want_env)
      * according to the magic numbers
      */
 #ifdef DEBUG
-    switch (Binary) {
+    switch (loaded_binary) {
     case IS_A68:
         TrapDebug((dbg_file, "A68 binary\n"));
         break;
@@ -372,21 +374,24 @@ int load_a_out(const char *file, const char *origpath, int want_env)
             (void) fclose(zin);
             return (-1);
         }
-        ispace = dspace = darray;
-        ibase = &(ispace[V12_MEMBASE]);	/* Load & run the binary starting */
-        dbase = ibase;	/* at address 16384 (040000) */
-        dwrite_base = 0;
+        new_ispace = new_dspace = darray;
+        text_base = data_base = V12_MEMBASE;
+        write_base = 0;
         e.a_entry = V12_MEMBASE;
         /* Reset the exec header fields to make loading code below
          * work properly
          */
         if (stat(file, &stb)) {
             fprintf(stderr, "Apout - cannot stat %s\n", file);
+            (void) fclose(zin);
             return -1;
         }
+        if (stb.st_size < 0 || stb.st_size > PDP_MEM_SIZE - V12_MEMBASE)
+            goto invalid_image;
         e.a_text = stb.st_size;
-        bbase = &(ispace[V12_MEMBASE + e.a_text]);
+        bss_base = V12_MEMBASE + e.a_text;
         e.a_data = 0;
+        e.a_bss = 0;
         break;
 #endif
 #ifdef EMUV1
@@ -403,11 +408,11 @@ int load_a_out(const char *file, const char *origpath, int want_env)
             (void) fclose(zin);
             return (-1);
         }
-        ispace = dspace = darray;
-        ibase = &(ispace[V12_MEMBASE]);	/* Load & run the binary starting */
-        dbase = &(ispace[e.a_text]);	/* at address 16384 (040000) */
-        bbase = &(ispace[e.a_text + e.a_data]);
-        dwrite_base = 0;
+        new_ispace = new_dspace = darray;
+        text_base = V12_MEMBASE;
+        data_base = e.a_text;
+        bss_base = e.a_text + e.a_data;
+        write_base = 0;
         e.a_entry = V12_MEMBASE;
         break;
 #endif
@@ -420,10 +425,10 @@ int load_a_out(const char *file, const char *origpath, int want_env)
         e.a_data = 0;
         e.a_bss = 0160000 - e.a_text;
         e.a_entry = e.a_flag;
-        ibase = ispace = dspace = darray;
-        dbase = ibase;
-        dwrite_base = 0;
-        bbase = &(ispace[e.a_text + e.a_data]);
+        new_ispace = new_dspace = darray;
+        text_base = data_base = 0;
+        write_base = 0;
+        bss_base = e.a_text + e.a_data;
         break;
     case ANY_NORMAL:
         /* Move back to end of V5/6/7 header */
@@ -431,23 +436,24 @@ int load_a_out(const char *file, const char *origpath, int want_env)
             (void) fclose(zin);
             return (-1);
         }
-        ibase = ispace = dspace = darray;
+        new_ispace = new_dspace = darray;
+        text_base = 0;
 #ifdef EMUV1
-        if (Binary == IS_V2) {
-            ibase = &(ispace[V12_MEMBASE]);
+        if (loaded_binary == IS_V2) {
+            text_base = V12_MEMBASE;
             e.a_entry = V12_MEMBASE;
-            dbase = &(ispace[e.a_text + V12_MEMBASE]);
-            bbase = &(ispace[e.a_text + e.a_data + V12_MEMBASE]);
+            data_base = e.a_text + V12_MEMBASE;
+            bss_base = e.a_text + e.a_data + V12_MEMBASE;
         } else
 #endif
         {
-            dbase = &(ispace[e.a_text]);
-            bbase = &(ispace[e.a_text + e.a_data]);
+            data_base = e.a_text;
+            bss_base = e.a_text + e.a_data;
         }
-        if ((Binary < IS_V7))
-            dwrite_base = 0;
+        if (loaded_binary < IS_V7)
+            write_base = 0;
         else
-            dwrite_base = e.a_text;
+            write_base = e.a_text;
         break;
     case ANY_ROTEXT:
         /* Move back to end of V5/6/7 header */
@@ -469,10 +475,11 @@ int load_a_out(const char *file, const char *origpath, int want_env)
             } else
                 size += e.max_ovl;
         }
-        ibase = ispace = dspace = darray;
-        dbase = &(ispace[size]);
-        bbase = &(ispace[size + e.a_data]);
-        dwrite_base = size;
+        new_ispace = new_dspace = darray;
+        text_base = 0;
+        data_base = size;
+        bss_base = size + e.a_data;
+        write_base = size;
         break;
     case ANY_SPLITID:
         /* Move back to end of V5/6/7 header */
@@ -482,15 +489,16 @@ int load_a_out(const char *file, const char *origpath, int want_env)
         }
     /* @fallthrough@ */
     case BSD_ROVERLAY:
-        ibase = ispace = iarray;
-        dbase = dspace = darray;
-        bbase = &(dspace[e.a_data]);
+        new_ispace = iarray;
+        new_dspace = darray;
+        text_base = data_base = 0;
+        bss_base = e.a_data;
 
         /* Try to stop null refs */
-        if (Binary == IS_211BSD)
-            dwrite_base = 0;
+        if (loaded_binary == IS_211BSD)
+            write_base = 0;
         else
-            dwrite_base = 2;
+            write_base = 2;
         break;
     default:
         (void) fprintf(stderr, "Apout - unknown a.out format 0%o\n",
@@ -499,6 +507,42 @@ int load_a_out(const char *file, const char *origpath, int want_env)
         return (-1);
     }
 
+
+    if (e.a_magic == BSD_OVERLAY || e.a_magic == BSD_ROVERLAY) {
+        if (e.max_ovl < 0)
+            goto invalid_image;
+        for (i = 0; i < NOVL; i++)
+            if (e.ov_siz[i] > e.max_ovl)
+                goto invalid_image;
+        size = EIGHT_K * ((e.a_text + EIGHT_K - 1) / EIGHT_K);
+        if (size + e.max_ovl > PDP_MEM_SIZE)
+            goto invalid_image;
+    }
+    if (text_base > PDP_MEM_SIZE || e.a_text > PDP_MEM_SIZE - text_base ||
+        data_base > PDP_MEM_SIZE || e.a_data > PDP_MEM_SIZE - data_base ||
+        bss_base > PDP_MEM_SIZE || e.a_bss > PDP_MEM_SIZE - bss_base)
+        goto invalid_image;
+    floor = bss_base + e.a_bss;
+    if (floor < data_base + e.a_data)
+        floor = data_base + e.a_data;
+    if (new_ispace == new_dspace && floor < text_base + e.a_text)
+        floor = text_base + e.a_text;
+    if (floor < write_base)
+        floor = write_base;
+    if (arg_env_start(want_env, floor, loaded_binary) == -1) {
+        i = errno;
+        (void) fclose(zin);
+        errno = i;
+        return -1;
+    }
+
+    Binary = loaded_binary;
+    ispace = new_ispace;
+    dspace = new_dspace;
+    dwrite_base = write_base;
+    ibase = &ispace[text_base];
+    dbase = &dspace[data_base];
+    bbase = &dspace[bss_base];
 
     /* Initialise the instruction table for our environment */
     switch (Binary) {
@@ -621,8 +665,12 @@ int load_a_out(const char *file, const char *origpath, int want_env)
         regs[5] = e.max_ovl;
         regs[4] = 0160000;
     }
-    set_arg_env(want_env);
-    return (0);
+    return set_arg_env(want_env, floor);
+
+invalid_image:
+    (void) fclose(zin);
+    errno = ENOEXEC;
+    return -1;
 }
 
 /*
@@ -667,11 +715,77 @@ int load_a_out(const char *file, const char *origpath, int want_env)
  * used by V7, 2.9BSD, 2.11BSD. Otherwise, don't create environment
  * variables: used by V1 up to V6.
  */
-static void set_arg_env(int want_env)
+static int arg_env_start(int want_env, unsigned floor, int binary)
 {
-    int i, posn, len;
+    size_t posn = PDP_MEM_SIZE - 2, length, vectors;
+    char **env = Envp[0] ? Envp : default_envp;
+    int envc = Envp[0] ? Envc : default_envc;
+    int i;
+
+    if ((want_env != 0 && want_env != 1) || Argc < 0 || (want_env && envc < 0)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (Argc > MAX_ARGS || (want_env && envc > MAX_ARGS)) {
+        errno = E2BIG;
+        return -1;
+    }
+#ifdef EMUV1
+    if (binary == IS_V1 || binary == IS_V2)
+        posn = KE11LO - 2;
+#endif
+    if (floor > posn)
+        goto oversized;
+    if (want_env) {
+        for (i = envc - 1; i >= 0; i--) {
+            if (env[i] == NULL) {
+                errno = EFAULT;
+                return -1;
+            }
+            length = strnlen(env[i], posn - floor);
+            if (length == posn - floor)
+                goto oversized;
+            posn -= length + 1;
+        }
+    }
+    for (i = Argc - 1; i >= 0; i--) {
+        if (Argv[i] == NULL) {
+            errno = EFAULT;
+            return -1;
+        }
+        length = strnlen(Argv[i], posn - floor);
+        if (length == posn - floor)
+            goto oversized;
+        posn -= length + 1;
+        if (i == 0)
+            posn &= ~(size_t) 1;
+        if (posn < floor)
+            goto oversized;
+    }
+    posn &= ~(size_t) 1;
+    if (posn < floor)
+        goto oversized;
+    vectors = 2 * (size_t) (Argc + (want_env ? envc + 3 : 2));
+    if (vectors > posn - floor)
+        goto oversized;
+    return (int) (posn - vectors);
+
+oversized:
+    errno = E2BIG;
+    return -1;
+}
+
+static int set_arg_env(int want_env, unsigned floor)
+{
+    int i, posn, len, start;
     int eposn[MAX_ARGS];
     int aposn[MAX_ARGS];
+
+    if (floor < dwrite_base)
+        floor = dwrite_base;
+    start = arg_env_start(want_env, floor, Binary);
+    if (start == -1)
+        return -1;
 
     /* Set default environment if there is none */
     if (Envp[0] == NULL) {
@@ -743,7 +857,8 @@ static void set_arg_env(int want_env)
     }
     posn -= 2;
     sl_word(posn, (u_int16_t) Argc);	/* Save the count of args */
-    regs[SP] = (u_int16_t) posn;	/* and initialise the SP */
+    regs[SP] = (u_int16_t) start;	/* and initialise the SP */
+    return 0;
 }
 
 

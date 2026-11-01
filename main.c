@@ -139,6 +139,8 @@ int main(int argc, char **argv)
     /* Try to load the binary as an a.out */
     if (load_a_out(argv[0], NULL, 1) == -1) {
         fprintf(stderr, "Apout - couldn't load %s\n", argv[0]);
+        if (errno)
+            perror("Apout - load error");
         exit(1);
     }
 

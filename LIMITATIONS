@@ -77,8 +77,11 @@ The time, interval-timer and resource-usage calls translate 32-bit guest
 values rather than copying host-sized fields. socketpair returns both guest
 file descriptors. Covered I/O, socket-address and time/resource buffers are
 bounds-checked. Filename and exec-string termination, exec-vector bounds and
-root-translation capacity are checked; this is not comprehensive validation of
-all syscall buffers or total exec stack size.
+root-translation capacity are checked. Initial exec stacks account for string
+bytes, alignment and pointer vectors, and cannot overlap loaded code/data/BSS
+or the V1/V2 KE11A window. Oversized stacks return E2BIG before guest-memory
+writes; image layouts extending beyond memory return ENOEXEC.
+This is not comprehensive validation of all syscall buffers or runtime stack growth.
 Unix and IPv4 socket-address headers are translated, with BSD copied-length
 semantics on output truncation. Unix socket paths still use native pathname
 handling and native path-length limits; other historical address-family layouts
