@@ -263,6 +263,9 @@ int main(int argc, char **argv)
     require(child != -1, "fork isolated signal tests");
     if (child) {
         require(waitpid(child, &status, 0) == child, "wait signal tests");
+        if (WIFSIGNALED(status))
+            fprintf(stderr, "FAIL signal test process terminated by native signal %d\n",
+                    WTERMSIG(status));
         return WIFEXITED(status) ? WEXITSTATUS(status) : EXIT_FAILURE;
     }
     alarm(15);
