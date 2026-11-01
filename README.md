@@ -66,6 +66,8 @@ regressions, plus BSD time/timer calls, resource usage, vectors, socket pairs
 and Unix/IPv4 socket-address translation (including truncation and invalid buffers).
 Pathname/root translation, exec-vector bounds, the 200-entry argument limit
 and exact-fit/overflow checks for initial exec stacks are also covered.
+BSD stat outputs, resource-limit conversion and group-list bounds are tested;
+resource-limit changes run only in a child, and setgroups tests use a stub.
 `make test-sanitize` runs the same checks with AddressSanitizer
 and UndefinedBehaviorSanitizer (a supporting compiler is required).
 Tests use private memory, a pseudoterminal, private Unix socket paths and
@@ -102,6 +104,11 @@ alignment, pointer vectors and loaded code/data/BSS boundaries. Oversized stacks
 return `E2BIG`; image layouts extending beyond guest memory return `ENOEXEC`.
 Rejected stack/layout checks preserve the existing guest memory and mappings.
 Runtime stack growth and remaining syscall structures are not comprehensively checked.
+BSD stat outputs are staged and initialized before copying. Resource limits use
+the six guest resource IDs and 32-bit guest values (`0x7fffffff` for infinity);
+larger native values are reported as guest infinity. Group lists use unsigned
+16-bit IDs and reject unrepresentable native IDs without partial output.
+As in 2.11BSD, a zero-capacity getgroups call is not a native count query.
 `APOUT_ROOT` is a pathname prefix, not a filesystem sandbox.
 
 ## Running binaries

@@ -1,9 +1,57 @@
+#include <sys/types.h>
+#include <unistd.h>
+#include <grp.h>
+
+static int test_getgroups(int count, gid_t *groups);
+static int test_setgroups(size_t count, const gid_t *groups);
+#define getgroups test_getgroups
+#define setgroups test_setgroups
 #include "../bsdtrap.c"
+#undef getgroups
+#undef setgroups
 #include <netinet/in.h>
 #include <poll.h>
+#include <sys/wait.h>
 
 static u_int16_t imem[PDP_MEM_SIZE / 2], dmem[PDP_MEM_SIZE / 2];
 static unsigned checks, failures;
+static int fake_groups, fail_setgroups, setgroups_calls;
+static size_t supplied_group_count;
+static gid_t supplied_groups[16];
+
+static int test_getgroups(int count, gid_t *groups)
+{
+    if (!fake_groups)
+        return getgroups(count, groups);
+    if (fake_groups == 3)
+        return 0;
+    if (fake_groups == 4) {
+        errno = EIO;
+        return -1;
+    }
+    if (count == 0)
+        return 2;
+    if (count < 2) {
+        errno = EINVAL;
+        return -1;
+    }
+    groups[0] = 123;
+    groups[1] = fake_groups == 2 ? 70000 : 60000;
+    return 2;
+}
+
+static int test_setgroups(size_t count, const gid_t *groups)
+{
+    setgroups_calls++;
+    supplied_group_count = count;
+    if (count <= 16 && count)
+        memcpy(supplied_groups, groups, count * sizeof(*groups));
+    if (fail_setgroups) {
+        errno = EPERM;
+        return -1;
+    }
+    return 0;
+}
 
 static void check(const char *name, long actual, long expected)
 {
@@ -618,6 +666,207 @@ static void pathname_tests(void)
     Argv[0] = Envp[0] = NULL;
 }
 
+static void structure_tests(void)
+{
+    struct stat native;
+    struct tr_stat guest;
+    struct rlimit limit;
+    char filename[] = "/tmp/apout-structures.XXXXXX";
+    unsigned n;
+    unsigned calls[] = {S_STAT, S_LSTAT, S_FSTAT};
+    int fd = mkstemp(filename);
+    unsigned pointer, k;
+    unsigned invalid_pointers[] = {0, 65535, 65530};
+    gid_t *native_groups;
+    int group_count, unrepresentable = 0;
+
+    require(fd != -1, "structure fixture");
+    require(write(fd, "hello", 5) == 5 && fstat(fd, &native) == 0, "fixture stat");
+    strcpy((char *) &dspace[04000], filename);
+    check("BSD stat wire size", sizeof(guest), 52);
+    for (n = 0; n < sizeof(calls) / sizeof(calls[0]); n++) {
+        for (k = 0; k < sizeof(invalid_pointers) / sizeof(invalid_pointers[0]); k++) {
+            syscall_test(calls[n], calls[n] == S_FSTAT ? fd : 04000,
+                         invalid_pointers[k], 0, 0);
+            check("BSD stat rejects invalid output", CC_C ? regs[0] : 0, EFAULT);
+        }
+        memset(&dspace[03000], 0x55, sizeof(guest) + 2);
+        syscall_test(calls[n], calls[n] == S_FSTAT ? fd : 04000, 03001, 0, 0);
+        check("BSD stat permits byte-aligned guest output", CC_C, 0);
+        memcpy(&guest, &dspace[03001], sizeof(guest));
+        check("BSD stat file size encoding", get32(03001 + offsetof(struct tr_stat, st_size)), 5);
+        check("BSD stat mode", guest.st_mode, (u_int16_t) native.st_mode);
+        check("BSD stat mtime encoding",
+              get32(03001 + offsetof(struct tr_stat, st_mtim)), (int32_t) native.st_mtime);
+        check("BSD stat clears spare1", guest.st_spare1, 0);
+        check("BSD stat clears spare2", guest.st_spare2, 0);
+        check("BSD stat clears spare3", guest.st_spare3, 0);
+        check("BSD stat clears spare4", guest.st_spare4[0] | guest.st_spare4[1] | guest.st_spare4[2], 0);
+        check("BSD stat leading canary", dspace[03000], 0x55);
+        check("BSD stat trailing canary", dspace[03001 + sizeof(guest)], 0x55);
+        pointer = PDP_MEM_SIZE - sizeof(guest);
+        syscall_test(calls[n], calls[n] == S_FSTAT ? fd : 04000, pointer, 0, 0);
+        check("BSD stat exact guest boundary", CC_C, 0);
+        check("BSD stat boundary size", get32(pointer + offsetof(struct tr_stat, st_size)), 5);
+    }
+    memset(&dspace[03000], 0x55, sizeof(guest));
+    syscall_test(S_FSTAT, 0177777, 03000, 0, 0);
+    check("BSD FSTAT descriptor failure", CC_C ? regs[0] : 0, EBADF);
+    check("BSD FSTAT failure preserves output", dspace[03000], 0x55);
+    require(close(fd) == 0 && unlink(filename) == 0, "cleanup structure fixture");
+    for (n = 0; n < 2; n++) {
+        memset(&dspace[03000], 0x55, sizeof(guest));
+        syscall_test(n ? S_STAT : S_LSTAT, 04000, 03000, 0, 0);
+        check("BSD missing-path stat fails", CC_C ? regs[0] : 0, ENOENT);
+        for (k = 0; k < sizeof(guest); k++)
+            if (dspace[03000 + k] != 0x55)
+                break;
+        check("BSD missing-path stat preserves complete output", k, sizeof(guest));
+    }
+    for (n = 0; n < 2; n++) {
+        for (k = 0; k < sizeof(invalid_pointers) / sizeof(invalid_pointers[0]); k++) {
+            syscall_test(n ? S_SETRLIMIT : S_GETRLIMIT, 4, invalid_pointers[k], 0, 0);
+            check("BSD resource limit rejects invalid buffer", CC_C ? regs[0] : 0, EFAULT);
+        }
+        syscall_test(n ? S_SETRLIMIT : S_GETRLIMIT, 6, 03000, 0, 0);
+        check("BSD rejects non-guest resource", CC_C ? regs[0] : 0, EINVAL);
+        syscall_test(n ? S_SETRLIMIT : S_GETRLIMIT, 0177777, 03000, 0, 0);
+        check("BSD rejects negative resource", CC_C ? regs[0] : 0, EINVAL);
+    }
+    require(getrlimit(RLIMIT_CORE, &limit) == 0, "native core limit");
+    memset(&dspace[03000], 0x55, 10);
+    syscall_test(S_GETRLIMIT, 4, 03001, 0, 0);
+    check("BSD GETRLIMIT byte-aligned output", CC_C, 0);
+    check("BSD GETRLIMIT infinity/large value translation",
+          get32(03001), limit.rlim_cur == RLIM_INFINITY || limit.rlim_cur > INT32_MAX ?
+          INT32_MAX : (int32_t) limit.rlim_cur);
+    check("BSD GETRLIMIT trailing canary", dspace[03011], 0x55);
+    check("BSD infinity encodes as signed-long maximum", bsd_limit_value(RLIM_INFINITY), INT32_MAX);
+    check("BSD wide native limit saturates", bsd_limit_value((rlim_t) INT32_MAX + 1), INT32_MAX);
+    check("BSD resource RSS maps to native RSS", bsd_resource(5), RLIMIT_RSS);
+    put32(03001, -1);
+    put32(03005, INT32_MAX);
+    syscall_test(S_SETRLIMIT, 4, 03001, 0, 0);
+    check("BSD SETRLIMIT rejects negative current limit", CC_C ? regs[0] : 0, EINVAL);
+    put32(03001, 0);
+    put32(03005, -1);
+    syscall_test(S_SETRLIMIT, 4, 03001, 0, 0);
+    check("BSD SETRLIMIT rejects negative maximum limit", CC_C ? regs[0] : 0, EINVAL);
+    memset(&dspace[03000], 0x55, 8);
+    syscall_test(S_GETRLIMIT, 6, 03000, 0, 0);
+    check("BSD GETRLIMIT failure preserves output", dspace[03000], 0x55);
+
+    syscall_test(S_SETGROUPS, 17, 0, 0, 0);
+    check("BSD SETGROUPS rejects excess count", CC_C ? regs[0] : 0, EINVAL);
+    syscall_test(S_SETGROUPS, 0177777, 0, 0, 0);
+    check("BSD SETGROUPS rejects negative count", CC_C ? regs[0] : 0, EINVAL);
+    syscall_test(S_GETGROUPS, 0177777, 0, 0, 0);
+    check("BSD GETGROUPS rejects negative count", CC_C ? regs[0] : 0, EINVAL);
+    for (k = 0; k < sizeof(invalid_pointers) / sizeof(invalid_pointers[0]); k++) {
+        syscall_test(S_SETGROUPS, 4, invalid_pointers[k], 0, 0);
+        check("BSD SETGROUPS rejects invalid input", CC_C ? regs[0] : 0, EFAULT);
+    }
+    check("Invalid SETGROUPS never reaches native call", setgroups_calls, 0);
+    put16(03001, 60000);
+    put16(03003, 123);
+    syscall_test(S_SETGROUPS, 2, 03001, 0, 0);
+    check("BSD SETGROUPS byte-aligned input succeeds", CC_C, 0);
+    check("BSD SETGROUPS preserves unsigned group ID", supplied_groups[0], 60000);
+    check("BSD SETGROUPS second group", supplied_groups[1], 123);
+    check("BSD SETGROUPS supplies count", supplied_group_count, 2);
+    syscall_test(S_SETGROUPS, 0, 0, 0, 0);
+    check("BSD SETGROUPS empty input succeeds", CC_C, 0);
+    check("BSD SETGROUPS empty input count", supplied_group_count, 0);
+    fail_setgroups = 1;
+    syscall_test(S_SETGROUPS, 2, 03001, 0, 0);
+    check("BSD SETGROUPS propagates host error", CC_C ? regs[0] : 0, EPERM);
+    check("BSD SETGROUPS preserves input on failure", get16(03001), 60000);
+    fail_setgroups = 0;
+    fake_groups = 1;
+    syscall_test(S_GETGROUPS, 0, 0, 0, 0);
+    check("BSD GETGROUPS zero capacity is not native count query", CC_C ? regs[0] : 0, EINVAL);
+    syscall_test(S_GETGROUPS, 1, 03000, 0, 0);
+    check("BSD GETGROUPS insufficient capacity", CC_C ? regs[0] : 0, EINVAL);
+    syscall_test(S_GETGROUPS, 2, 65534, 0, 0);
+    check("BSD GETGROUPS rejects output overrun", CC_C ? regs[0] : 0, EFAULT);
+    syscall_test(S_GETGROUPS, 2, 0, 0, 0);
+    check("BSD GETGROUPS rejects NULL output", CC_C ? regs[0] : 0, EFAULT);
+    memset(&dspace[03000], 0x55, 8);
+    syscall_test(S_GETGROUPS, 16, 03001, 0, 0);
+    check("BSD GETGROUPS returns actual count", CC_C ? -1 : regs[0], 2);
+    check("BSD GETGROUPS first group", get16(03001), 123);
+    check("BSD GETGROUPS unsigned group", get16(03003), 60000);
+    check("BSD GETGROUPS leading canary", dspace[03000], 0x55);
+    check("BSD GETGROUPS trailing canary", dspace[03005], 0x55);
+    syscall_test(S_GETGROUPS, 16, 65532, 0, 0);
+    check("BSD GETGROUPS validates actual copied count", CC_C ? -1 : regs[0], 2);
+    fake_groups = 2;
+    memset(&dspace[03000], 0x55, 8);
+    syscall_test(S_GETGROUPS, 16, 03001, 0, 0);
+    check("BSD GETGROUPS rejects unrepresentable group ID", CC_C ? regs[0] : 0, EOVERFLOW);
+    check("BSD GETGROUPS overflow preserves all output", get32(03001), 0x55555555);
+    fake_groups = 3;
+    syscall_test(S_GETGROUPS, 0, 0, 0, 0);
+    check("BSD GETGROUPS permits truly empty group list", CC_C ? -1 : regs[0], 0);
+    fake_groups = 4;
+    memset(&dspace[03000], 0x55, 8);
+    syscall_test(S_GETGROUPS, 16, 03001, 0, 0);
+    check("BSD GETGROUPS propagates host error", CC_C ? regs[0] : 0, EIO);
+    check("BSD GETGROUPS host error preserves output", get32(03001), 0x55555555);
+    fake_groups = 0;
+    group_count = getgroups(0, NULL);
+    require(group_count >= 0 && group_count <= 32767, "native group count");
+    native_groups = malloc((size_t) (group_count + 1) * sizeof(*native_groups));
+    require(native_groups != NULL, "native groups allocation");
+    require(getgroups(group_count, native_groups) == group_count, "native groups");
+    for (k = 0; k < group_count; k++)
+        if (native_groups[k] > UINT16_MAX)
+            unrepresentable = 1;
+    syscall_test(S_GETGROUPS, group_count, 04001, 0, 0);
+    check("BSD GETGROUPS native list translation",
+          CC_C ? -(long) regs[0] : regs[0], unrepresentable ? -EOVERFLOW : group_count);
+    if (!unrepresentable)
+        for (k = 0; k < group_count; k++)
+            check("BSD GETGROUPS native group content", get16(04001 + k * 2), native_groups[k]);
+    free(native_groups);
+}
+
+static void limit_child_tests(void)
+{
+    int status;
+    pid_t child = fork();
+
+    require(child != -1, "fork resource test");
+    if (child == 0) {
+        struct rlimit original, changed;
+        unsigned char saved[8];
+        unsigned before = failures;
+        int32_t hard;
+
+        require(getrlimit(RLIMIT_CORE, &original) == 0, "child core limit");
+        hard = original.rlim_max == RLIM_INFINITY ? INT32_MAX :
+               (original.rlim_max > 4096 ? 4096 : (int32_t) original.rlim_max);
+        put32(03001, 0);
+        put32(03005, hard);
+        memcpy(saved, &dspace[03001], 8);
+        syscall_test(S_SETRLIMIT, 4, 03001, 0, 0);
+        check("BSD SETRLIMIT stages complete native fields", CC_C, 0);
+        check("BSD SETRLIMIT preserves input", memcmp(saved, &dspace[03001], 8), 0);
+        require(getrlimit(RLIMIT_CORE, &changed) == 0, "child changed core limit");
+        check("BSD SETRLIMIT native soft value", changed.rlim_cur, 0);
+        check("BSD SETRLIMIT native hard value",
+              changed.rlim_max == (hard == INT32_MAX ? RLIM_INFINITY : (rlim_t) hard), 1);
+        syscall_test(S_GETRLIMIT, 4, 65528, 0, 0);
+        check("BSD GETRLIMIT exact boundary", CC_C, 0);
+        check("BSD GETRLIMIT returns installed soft limit", get32(65528), 0);
+        check("BSD GETRLIMIT returns installed hard limit", get32(65532), hard);
+        _exit(failures == before ? 0 : 1);
+    }
+    require(waitpid(child, &status, 0) == child, "wait resource test");
+    check("Resource limit changes isolated to child",
+          WIFEXITED(status) ? WEXITSTATUS(status) : -1, 0);
+}
+
 int main(int argc, char **argv)
 {
     (void) argc;
@@ -635,6 +884,8 @@ int main(int argc, char **argv)
     inet_stream_tests();
     recvfrom_tests();
     pathname_tests();
+    structure_tests();
+    limit_child_tests();
     printf("BSD: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

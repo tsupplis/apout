@@ -82,6 +82,11 @@ bytes, alignment and pointer vectors, and cannot overlap loaded code/data/BSS
 or the V1/V2 KE11A window. Oversized stacks return E2BIG before guest-memory
 writes; image layouts extending beyond memory return ENOEXEC.
 This is not comprehensive validation of all syscall buffers or runtime stack growth.
+BSD stat structures are bounds-checked and staged with initialized spare fields.
+Resource-limit structures use bounded 32-bit guest conversion and guest resource
+IDs; native infinity or values above 0x7fffffff report guest infinity.
+Group lists are bounds-checked and use unsigned 16-bit IDs; native IDs that
+cannot fit return EOVERFLOW rather than being truncated.
 Unix and IPv4 socket-address headers are translated, with BSD copied-length
 semantics on output truncation. Unix socket paths still use native pathname
 handling and native path-length limits; other historical address-family layouts

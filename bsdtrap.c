@@ -77,6 +77,24 @@ static void bsd_store_timeval(unsigned addr, const struct timeval *value)
     bsd_store_long(addr + 4, value->tv_usec);
 }
 
+static int bsd_resource(unsigned resource)
+{
+    static const int resources[] = {
+        RLIMIT_CPU, RLIMIT_FSIZE, RLIMIT_DATA,
+        RLIMIT_STACK, RLIMIT_CORE, RLIMIT_RSS
+    };
+    if (resource >= sizeof(resources) / sizeof(resources[0])) {
+        errno = EINVAL;
+        return -1;
+    }
+    return resources[resource];
+}
+
+static int32_t bsd_limit_value(rlim_t value)
+{
+    return value == RLIM_INFINITY || value > INT32_MAX ? INT32_MAX : (int32_t) value;
+}
+
 static int bsd_load_sockaddr(u_int16_t addr, unsigned length,
                              struct sockaddr_storage *value, socklen_t *size)
 {
@@ -170,7 +188,7 @@ void bsdtrap()
     long larg1;
     char *fmode;		/* used with fdopen only */
     struct stat stbuf;		/* used in STAT */
-    struct tr_stat *tr_stbuf;	/* used in STAT */
+    struct tr_stat guest_stat, *tr_stbuf = &guest_stat;
     struct timeval del, oldel;	/* used in ADJTIME */
     struct timeval utv[2];	/* used in UTIMES */
     struct tr_timezone guest_zone;
@@ -180,13 +198,14 @@ void bsdtrap()
     socklen_t sock_length;
     u_int16_t sock_capacity;
     gid_t *gidset;		/* used in GETGROUPS */
-    struct tr_rlimit *tr_rlp;	/* used in rlimit calls */
     struct rlimit rlp;		/* used in rlimit calls */
+    int32_t limit_cur, limit_max;
     struct tr_rusage guest_use, *tr_use = &guest_use;
     struct rusage use;		/* used in getrusage */
     struct iovec ivec[16];	/* 2.11BSD's kernel vector limit. */
     struct tr_iovec vector;
     u_int16_t guest_fds[2];
+    u_int16_t guest_gid;
     size_t total;
 
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
@@ -499,19 +518,28 @@ void bsdtrap()
         i = flock(sarg1, sarg2);
         break;
     case S_LSTAT:		/* DONE */
+        if (!valid_dspace_range(uarg2, sizeof(guest_stat))) {
+            i = -1;
+            break;
+        }
         buf = xlate_filename((char *) &dspace[uarg1]);
-        tr_stbuf = (struct tr_stat *) &dspace[uarg2];
         i = lstat(buf, &stbuf);
         TrapDebug((dbg_file, "on %s ", buf));
         goto dostat;
     case S_STAT:		/* DONE */
+        if (!valid_dspace_range(uarg2, sizeof(guest_stat))) {
+            i = -1;
+            break;
+        }
         buf = xlate_filename((char *) &dspace[uarg1]);
-        tr_stbuf = (struct tr_stat *) &dspace[uarg2];
         i = stat(buf, &stbuf);
         TrapDebug((dbg_file, "on %s ", buf));
         goto dostat;
     case S_FSTAT:		/* DONE */
-        tr_stbuf = (struct tr_stat *) &dspace[uarg2];
+        if (!valid_dspace_range(uarg2, sizeof(guest_stat))) {
+            i = -1;
+            break;
+        }
         i = fstat(uarg1, &stbuf);
         TrapDebug((dbg_file, "on fd %d ", uarg1));
 
@@ -519,6 +547,7 @@ dostat:
         if (i == -1)
             break;
         else {
+            memset(tr_stbuf, 0, sizeof(*tr_stbuf));
             /* The following stops blksize equalling 64K,
              * which becomes 0 in a 16-bit int. This then
              * causes 2.11BSD flsbuf() to malloc(0), which
@@ -544,6 +573,7 @@ dostat:
             copylong(tr_stbuf->st_blksize, stbuf.st_blksize);
             larg1 = stbuf.st_blocks;
             copylong(tr_stbuf->st_blocks, larg1);
+            memcpy(&dspace[uarg2], tr_stbuf, sizeof(*tr_stbuf));
         }
         break;
     case S_UTIMES:		/* DONE */
@@ -952,50 +982,100 @@ dostat:
         break;
     case S_GETGROUPS:
         len = sarg1;
-        gidset = (gid_t *) malloc(len * sizeof(gid_t));
-        if (gidset == NULL) {
+        if (len < 0) {
             i = -1;
             errno = EINVAL;
             break;
         }
+        i = getgroups(0, NULL);
+        if (i == -1)
+            break;
+        if (i > len) {
+            i = -1;
+            errno = EINVAL;
+            break;
+        }
+        len = i;
+        if (!valid_dspace_range(uarg2, (size_t) len * 2)) {
+            i = -1;
+            break;
+        }
+        if (len == 0)
+            break;
+        gidset = malloc((size_t) len * sizeof(*gidset));
+        if (gidset == NULL) {
+            i = -1;
+            break;
+        }
         i = getgroups(len, gidset);
-        shortptr = (int16_t *) & dspace[uarg2];
-        for (j = 0; j < i; j++)
-            shortptr[j] = gidset[j];
+        for (j = 0; j < i; j++) {
+            if (gidset[j] > UINT16_MAX) {
+                i = -1;
+                errno = EOVERFLOW;
+                break;
+            }
+        }
+        for (j = 0; j < i; j++) {
+            guest_gid = gidset[j];
+            memcpy(&dspace[uarg2 + j * 2], &guest_gid, 2);
+        }
         free(gidset);
         break;
     case S_SETGROUPS:
         len = sarg1;
-        if (len > 16) {
-            i = -1;
-            errno = EFAULT;
-            break;
-        }
-        gidset = (gid_t *) malloc(len * sizeof(gid_t));
-        if (gidset == NULL) {
+        if (len < 0 || len > 16) {
             i = -1;
             errno = EINVAL;
             break;
         }
-        shortptr = (int16_t *) & dspace[uarg2];
-        for (j = 0; j < len; j++)
-            gidset[j] = shortptr[j];
+        if (!valid_dspace_range(uarg2, (size_t) len * 2)) {
+            i = -1;
+            break;
+        }
+        if (len == 0) {
+            i = setgroups(0, NULL);
+            break;
+        }
+        gidset = malloc((size_t) len * sizeof(*gidset));
+        if (gidset == NULL) {
+            i = -1;
+            break;
+        }
+        for (j = 0; j < len; j++) {
+            memcpy(&guest_gid, &dspace[uarg2 + j * 2], 2);
+            gidset[j] = guest_gid;
+        }
         i = setgroups(len, gidset);
         free(gidset);
         break;
     case S_GETRLIMIT:	/* DONE */
-        tr_rlp = (struct tr_rlimit *) &dspace[uarg2];
-        i = getrlimit(sarg1, &rlp);
+        j = bsd_resource(uarg1);
+        if (j == -1 || !valid_dspace_range(uarg2, 8)) {
+            i = -1;
+            break;
+        }
+        i = getrlimit(j, &rlp);
         if (i == -1)
             break;
-        copylong(tr_rlp->rlim_cur, rlp.rlim_cur);
-        copylong(tr_rlp->rlim_max, rlp.rlim_max);
+        bsd_store_long(uarg2, bsd_limit_value(rlp.rlim_cur));
+        bsd_store_long(uarg2 + 4, bsd_limit_value(rlp.rlim_max));
         break;
     case S_SETRLIMIT:	/* DONE */
-        tr_rlp = (struct tr_rlimit *) &dspace[uarg2];
-        copylong(rlp.rlim_cur, tr_rlp->rlim_cur);
-        copylong(rlp.rlim_max, tr_rlp->rlim_max);
-        i = setrlimit(sarg1, &rlp);
+        j = bsd_resource(uarg1);
+        if (j == -1 || !valid_dspace_range(uarg2, 8)) {
+            i = -1;
+            break;
+        }
+        limit_cur = bsd_load_long(uarg2);
+        limit_max = bsd_load_long(uarg2 + 4);
+        if (limit_cur < 0 || limit_max < 0) {
+            i = -1;
+            errno = EINVAL;
+            break;
+        }
+        rlp.rlim_cur = limit_cur == INT32_MAX ? RLIM_INFINITY : (rlim_t) limit_cur;
+        rlp.rlim_max = limit_max == INT32_MAX ? RLIM_INFINITY : (rlim_t) limit_max;
+        i = setrlimit(j, &rlp);
         break;
     case S_GETRUSAGE:
         TrapDebug((dbg_file, "arg1 %d pointer 0%o ", sarg1, uarg2));
