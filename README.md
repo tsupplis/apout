@@ -64,6 +64,8 @@ compile ok. You will eventually get the apout program.
 Run `make test` for loader alignment, instruction, floating-point, KE11A, terminal and signal
 regressions, plus BSD time/timer calls, resource usage, vectors, socket pairs
 and Unix/IPv4 socket-address translation (including truncation and invalid buffers).
+Pathname/root translation, exec-vector bounds and the 200-entry argument limit
+are also covered.
 `make test-sanitize` runs the same checks with AddressSanitizer
 and UndefinedBehaviorSanitizer (a supporting compiler is required).
 Tests use private memory, a pseudoterminal, private Unix socket paths and
@@ -89,6 +91,14 @@ BSD bind/connect addresses and accept/name/recvfrom outputs are bounded and
 translated between guest and native family headers. Truncated address outputs
 report bytes copied, matching 2.11BSD. Unix socket paths retain native pathname
 handling; other historical address-family layouts are not translated.
+Pathnames and exec argument/environment strings must terminate within guest
+memory. Invalid pointers or wrapping/unaligned exec vectors return `EFAULT`;
+oversized root translations return `ENAMETOOLONG`, and exec vectors exceeding
+200 entries return `E2BIG`. Argument/environment arrays include space for their
+terminators. Empty filenames still map to the current directory, including
+the existing V1/V7 NULL-stat compatibility.
+These checks do not yet cover every syscall structure or total exec stack size.
+`APOUT_ROOT` is a pathname prefix, not a filesystem sandbox.
 
 ## Running binaries
 

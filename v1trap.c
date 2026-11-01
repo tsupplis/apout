@@ -123,6 +123,7 @@ void v1trap()
         i = -1;
         goto done;
     }
+    i = 0;
 
     switch (trapnum) {
 
@@ -578,7 +579,7 @@ static int v1trap_exec(void)
     cptr = uarg2;
 
     Argc = 0;
-    while (cptr && Argc < MAX_ARGS - 1) {
+    while (cptr && Argc < MAX_ARGS) {
         ll_word(cptr, cptr2);
         if (cptr2 == 0)
             break;

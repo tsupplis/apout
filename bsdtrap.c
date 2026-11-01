@@ -1079,7 +1079,7 @@ static int trap_execve(int want_env)
     cptr = uarg2;
     Argc = 0;
     Envc = 0;
-    while (cptr && Argc < MAX_ARGS - 1) {
+    while (cptr && Argc < MAX_ARGS) {
         ll_word(cptr, cptr2);
         if (cptr2 == 0)
             break;
@@ -1093,7 +1093,7 @@ static int trap_execve(int want_env)
 
     if (want_env) {
         cptr = uarg3;
-        while (cptr && Envc < MAX_ARGS - 1) {
+        while (cptr && Envc < MAX_ARGS) {
             ll_word(cptr, cptr2);
             if (cptr2 == 0)
                 break;
@@ -1111,7 +1111,8 @@ static int trap_execve(int want_env)
             for (Envc--; Envc >= 0; Envc--)
                 free(Envp[Envc]);
         free(origpath);
-        errno = ENOENT;
+        if (errno == 0)
+            errno = ENOENT;
         return (-1);
     }
     run();			/* Ok, so it's recursive, I dislike setjmp */

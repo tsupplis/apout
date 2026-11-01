@@ -62,7 +62,7 @@ u_int8_t current_ov = 0;	/* Current overlay number */
  * allows load_a_out() to modify it when dealing with shell
  * scripts, before calling set_arg_env()
  */
-char *Argv[MAX_ARGS], *Envp[MAX_ARGS];
+char *Argv[MAX_ARGS + 1], *Envp[MAX_ARGS + 1];
 int Argc, Envc;
 int Binary;			/* Type of binary this a.out is */
 
@@ -215,7 +215,7 @@ int load_script(const char *file, const char *origpath, FILE * zin,
         return (-1);
     }
     /* Now shift the args up and insert new ones */
-    for (i = Argc - 1; i != 0; i--)
+    for (i = Argc - 1; i > 0; i--)
         Argv[i + script_cnt] = Argv[i];
     for (i = 0; i < Argc; i++)
         TrapDebug((dbg_file, "Part A load_script Argv[%d] is %s\n", i,
@@ -683,7 +683,7 @@ static void set_arg_env(int want_env)
     /* Set up the program's name -- used for debugging */
     if (progname)
         free(progname);
-    progname = strdup(Argv[0]);
+    progname = strdup(Argc ? Argv[0] : "");
 
     if (trap_debug) {
         fprintf(dbg_file, "In set_arg_env, Argc is %d\n", Argc);

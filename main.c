@@ -69,6 +69,10 @@ int main(int argc, char **argv)
             inst_debug = 1;
             argc--;
             argv++;
+            if (argc > MAX_ARGS) {
+                fprintf(stderr, "Apout - too many arguments (maximum %d)\n", MAX_ARGS);
+                exit(EXIT_FAILURE);
+            }
             continue;
         }
         if (!strcmp(argv[1], "-trap")) {

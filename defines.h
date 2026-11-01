@@ -181,7 +181,7 @@ extern char *streammode[NFILE];
 
 extern int sig_arrived;		/* Indicates if a signal has arrived */
 extern int Argc, Envc;		/* Arguments passed to new process */
-extern char *Argv[MAX_ARGS], *Envp[MAX_ARGS];
+extern char *Argv[MAX_ARGS + 1], *Envp[MAX_ARGS + 1];
 extern int Binary;		/* Type of binary this a.out is. One of: */
 #define IS_UNKNOWN	0
 #define IS_V1		1

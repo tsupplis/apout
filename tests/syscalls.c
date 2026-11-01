@@ -107,22 +107,141 @@ static void pathname_call(int edition, unsigned number, u_int16_t first,
 
 static void pathname_tests(void)
 {
+    static const unsigned common[] = {
+        S_OPEN, S_CREAT, S_LINK, S_UNLINK, S_EXEC, S_CHDIR,
+        S_MKNOD, S_CHMOD, S_CHOWN, S_STAT
+    };
+    static const unsigned v7_only[] = {S_ACCESS, S_UTIME, S_CHROOT, S_EXECE};
+    char root[2 * MAXPATHLEN + 1];
+    char *first, *second;
     int edition;
+    unsigned n;
     set_apout_root("/");
     dspace[0] = 0;
     memset(&dspace[65534], 'x', 2);
     strcpy((char *) &dspace[04000], "apout-no-such-source");
     for (edition = 0; edition < 2; edition++) {
-        pathname_call(edition, S_CHDIR, 0, 0);
-        check("V1/V7 CHDIR rejects NULL pathname", CC_C, 1);
-        check("V1/V7 NULL pathname errno", errno, EFAULT);
-        pathname_call(edition, S_CHDIR, 65534, 0);
-        check("V1/V7 CHDIR rejects unterminated pathname", CC_C, 1);
-        check("V1/V7 unterminated pathname errno", errno, EFAULT);
+        for (n = 0; n < sizeof(common) / sizeof(common[0]); n++) {
+            if (common[n] != S_STAT) {
+                pathname_call(edition, common[n], 0, 0);
+                check("V1/V7 syscall rejects NULL pathname", CC_C, 1);
+                check("V1/V7 NULL pathname errno", errno, EFAULT);
+            }
+            pathname_call(edition, common[n], 65534, 0);
+            check("V1/V7 syscall rejects unterminated pathname", CC_C, 1);
+            check("V1/V7 unterminated pathname errno", errno, EFAULT);
+        }
         pathname_call(edition, S_LINK, 04000, 65534);
         check("V1/V7 LINK validates second pathname", CC_C, 1);
         check("V1/V7 second pathname errno", errno, EFAULT);
+        dspace[0] = 0x55;
+        pathname_call(edition, S_STAT, 0, 03000);
+        check("V1/V7 STAT preserves NULL-as-current-directory compatibility", CC_C, 0);
+        dspace[0] = 0;
     }
+    for (n = 0; n < sizeof(v7_only) / sizeof(v7_only[0]); n++) {
+        pathname_call(0, v7_only[n], 0, 0);
+        check("V7 pathname syscall rejects NULL", CC_C, 1);
+        check("V7 pathname NULL errno", errno, EFAULT);
+        pathname_call(0, v7_only[n], 65534, 0);
+        check("V7 pathname syscall rejects unterminated string", CC_C, 1);
+        check("V7 pathname unterminated errno", errno, EFAULT);
+    }
+    pathname_call(1, 30, 65534, 0); /* V1 SMDATE, not V7 UTIME. */
+    check("V1 SMDATE validates pathname", CC_C, 1);
+    check("V1 SMDATE pathname errno", errno, EFAULT);
+    dspace[65534] = '.';
+    dspace[65535] = 0;
+    pathname_call(0, S_CHDIR, 65534, 0);
+    check("V7 pathname terminator at memory boundary", CC_C, 0);
+    pathname_call(1, S_CHDIR, 65535, 0);
+    check("V1 empty pathname compatibility at memory boundary", CC_C, 0);
+
+    first = xlate_filename("/first");
+    second = xlate_filename("/second");
+    check("Path translation retains first of two buffers", strcmp(first, "//first"), 0);
+    check("Path translation retains second buffer", strcmp(second, "//second"), 0);
+    check("Root setter accepts aliased translation buffer", set_apout_root(first), 0);
+    check("Aliased root translation", strcmp(xlate_filename("/child"), "//first/child"), 0);
+    memset(root, 'r', sizeof(root) - 1);
+    root[sizeof(root) - 1] = 0;
+    check("Root setter rejects oversized root", set_apout_root(root), -1);
+    check("Oversized root errno", errno, ENAMETOOLONG);
+    check("Failed root change preserves previous root",
+          strcmp(xlate_filename("/child"), "//first/child"), 0);
+    check("Root setter rejects NULL", set_apout_root(NULL), -1);
+    check("NULL root errno", errno, EINVAL);
+
+    root[0] = '/';
+    root[2 * MAXPATHLEN - 3] = 0;
+    check("Root setter accepts bounded long root", set_apout_root(root), 0);
+    first = xlate_filename("/x");
+    check("Exact translation capacity succeeds", first != NULL, 1);
+    if (first) {
+        check("Exact translation capacity terminates", first[2 * MAXPATHLEN - 1], 0);
+        check("Exact translation capacity length", strlen(first), 2 * MAXPATHLEN - 1);
+        check("Exact translation capacity suffix", strcmp(first + 2 * MAXPATHLEN - 3, "/x"), 0);
+    }
+    check("Translation rejects root-plus-path overflow", xlate_filename("/xx") == NULL, 1);
+    check("Root-plus-path overflow errno", errno, ENAMETOOLONG);
+    strcpy((char *) &dspace[04000], "/xx");
+    for (edition = 0; edition < 2; edition++) {
+        pathname_call(edition, S_CHDIR, 04000, 0);
+        check("V1/V7 propagates translation overflow", CC_C, 1);
+        check("V1/V7 translation overflow errno", errno, ENAMETOOLONG);
+    }
+    check("Restore root", set_apout_root("/"), 0);
+}
+
+static void exec_argument_tests(void)
+{
+    static char preserved[] = "preserved";
+    u_int16_t vector[MAX_ARGS + 2];
+    unsigned n;
+    int edition;
+
+    strcpy((char *) &dspace[04000], "apout-no-such-executable");
+    strcpy((char *) &dspace[05000], "argument");
+    for (edition = 0; edition < 2; edition++) {
+        Argc = Envc = 1;
+        Argv[0] = Envp[0] = preserved;
+        pathname_call(edition, S_EXEC, 04000, 65535);
+        check("V1/V7 EXEC rejects invalid vector", CC_C, 1);
+        check("V1/V7 EXEC vector errno", errno, EFAULT);
+        check("Invalid EXEC preserves argc", Argc, 1);
+        check("Invalid EXEC preserves argv", Argv[0] == preserved, 1);
+        vector[0] = 05000;
+        memcpy(&dspace[65534], vector, 2);
+        pathname_call(edition, S_EXEC, 04000, 65534);
+        check("V1/V7 EXEC rejects wrapping vector", CC_C, 1);
+        check("V1/V7 EXEC wrapping errno", errno, EFAULT);
+        vector[0] = 65534;
+        vector[1] = 0;
+        memcpy(&dspace[03000], vector, 4);
+        memset(&dspace[65534], 'x', 2);
+        pathname_call(edition, S_EXEC, 04000, 03000);
+        check("V1/V7 EXEC rejects unterminated argument", CC_C, 1);
+        check("V1/V7 EXEC argument errno", errno, EFAULT);
+        for (n = 0; n <= MAX_ARGS; n++)
+            vector[n] = 05000;
+        vector[MAX_ARGS + 1] = 0;
+        memcpy(&dspace[03000], vector, sizeof(vector));
+        pathname_call(edition, S_EXEC, 04000, 03000);
+        check("V1/V7 EXEC rejects excess arguments", CC_C, 1);
+        check("V1/V7 EXEC excess argument errno", errno, E2BIG);
+        vector[MAX_ARGS] = 0;
+        memcpy(&dspace[03000], vector, sizeof(vector));
+        check("EXEC validator accepts exactly MAX_ARGS", valid_guest_exec_args(03000, 0, 0), 1);
+        check("EXEC validator ignores unused environment", valid_guest_exec_args(0, 65535, 0), 1);
+    }
+    V7A.uarg[0] = 04000;
+    V7A.uarg[1] = 0;
+    V7A.uarg[2] = 65535;
+    check("V7 EXEC validates environment vector", trap_exec(1), -1);
+    check("V7 EXEC environment errno", errno, EFAULT);
+    check("EXEC validator accepts empty vectors", valid_guest_exec_args(0, 0, 1), 1);
+    Argc = Envc = 0;
+    Argv[0] = Envp[0] = NULL;
 }
 
 int main(int argc, char **argv)
@@ -141,6 +260,7 @@ int main(int argc, char **argv)
     dwrite_base = 0;
     Binary = IS_V7;
     pathname_tests();
+    exec_argument_tests();
     Binary = IS_V7;
     master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master == -1 || grantpt(master) == -1 || unlockpt(master) == -1) {

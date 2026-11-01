@@ -199,7 +199,7 @@ static int valid_exec_vector(u_int16_t addr)
         memcpy(&string, &dspace[cursor], 2);
         if (!string)
             return 1;
-        if (count >= MAX_ARGS - 1) {
+        if (count >= MAX_ARGS) {
             errno = E2BIG;
             return 0;
         }

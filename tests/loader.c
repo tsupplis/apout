@@ -53,6 +53,20 @@ int main(int argc, char **argv)
             }
         }
     }
+    Binary = IS_V7;
+    Argc = Envc = MAX_ARGS;
+    for (edition = 0; edition < MAX_ARGS; edition++) {
+        Argv[edition] = "arg";
+        Envp[edition] = "X=y";
+    }
+    Argv[MAX_ARGS] = Envp[MAX_ARGS] = NULL;
+    set_arg_env(1);
+    ll_word(regs[SP], value);
+    check("Loader supports full MAX_ARGS count", value, MAX_ARGS);
+    ll_word(regs[SP] + 2 * (MAX_ARGS + 1), value);
+    check("Loader terminates maximum argument vector", value, 0);
+    ll_word(regs[SP] + 2 * (2 * MAX_ARGS + 2), value);
+    check("Loader terminates maximum environment vector", value, 0);
     printf("Loader: %u checks, %u failures\n", checks, failures);
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
 }

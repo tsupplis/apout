@@ -536,15 +536,86 @@ static void io_tests(void)
 
 static void pathname_tests(void)
 {
+    static const unsigned calls[] = {
+        S_OPEN, S_CREAT, S_LINK, S_SYMLINK, S_RENAME, S_READLINK,
+        S_ACCESS, S_MKDIR, S_RMDIR, S_ACCT, S_LSTAT, S_STAT, S_UTIMES,
+        S_UNLINK, S_MKNOD, S_CHMOD, S_TRUNCATE, S_CHOWN, S_CHROOT,
+        S_CHDIR, S_EXECV, S_EXECVE
+#ifndef NO_CHFLAGS
+        , S_CHFLAGS
+#endif
+    };
+    static const unsigned pairs[] = {S_LINK, S_SYMLINK, S_RENAME};
+    static char preserved[] = "preserved";
+    char root[2 * MAXPATHLEN - 2];
+    u_int16_t vector[MAX_ARGS + 2];
+    void (*previous)(int);
+    unsigned n;
+
     dspace[0] = 0;
     memset(&dspace[65534], 'x', 2);
-    syscall_test(S_CHDIR, 0, 0, 0, 0);
-    check("BSD CHDIR rejects NULL pathname", CC_C ? regs[0] : 0, EFAULT);
-    syscall_test(S_CHDIR, 65534, 0, 0, 0);
-    check("BSD CHDIR rejects unterminated pathname", CC_C ? regs[0] : 0, EFAULT);
+    for (n = 0; n < sizeof(calls) / sizeof(calls[0]); n++) {
+        if (calls[n] != S_ACCT) {
+            syscall_test(calls[n], 0, 0, 0, 0);
+            check("BSD pathname syscall rejects NULL", CC_C ? regs[0] : 0, EFAULT);
+        }
+        syscall_test(calls[n], 65534, 0, 0, 0);
+        check("BSD pathname syscall rejects unterminated string", CC_C ? regs[0] : 0, EFAULT);
+    }
     strcpy((char *) &dspace[04000], "apout-no-such-source");
-    syscall_test(S_LINK, 04000, 65534, 0, 0);
-    check("BSD LINK validates second pathname", CC_C ? regs[0] : 0, EFAULT);
+    memset(&dspace[65000], 'x', PDP_MEM_SIZE - 65000);
+    for (n = 0; n < sizeof(pairs) / sizeof(pairs[0]); n++) {
+        syscall_test(pairs[n], 04000, 65000, 0, 0);
+        check("BSD validates both pathnames before host call", CC_C ? regs[0] : 0, EFAULT);
+    }
+    dspace[65535] = 0;
+    syscall_test(S_ACCESS, 65535, F_OK, 0, 0);
+    check("BSD empty pathname compatibility at memory boundary", CC_C, 0);
+    memset(root, 'r', sizeof(root) - 1);
+    root[0] = '/';
+    root[sizeof(root) - 1] = 0;
+    require(set_apout_root(root) == 0, "long root");
+    strcpy((char *) &dspace[04000], "/xx");
+    syscall_test(S_CHDIR, 04000, 0, 0, 0);
+    check("BSD propagates root-plus-path overflow", CC_C ? regs[0] : 0, ENAMETOOLONG);
+    require(set_apout_root("/") == 0, "restore root");
+    strcpy((char *) &dspace[04000], "apout-no-such-executable");
+    strcpy((char *) &dspace[05000], "argument");
+    Argc = Envc = 1;
+    Argv[0] = Envp[0] = preserved;
+    previous = signal(SIGTERM, SIG_IGN);
+    require(previous != SIG_ERR, "set test signal");
+    syscall_test(S_EXECVE, 04000, 65535, 0, 0);
+    check("BSD EXEC rejects invalid vector", CC_C ? regs[0] : 0, EFAULT);
+    check("BSD invalid EXEC preserves argc", Argc, 1);
+    check("BSD invalid EXEC preserves argv", Argv[0] == preserved, 1);
+    check("BSD invalid EXEC preserves environment", Envp[0] == preserved, 1);
+    check("BSD invalid EXEC preserves signal disposition",
+          signal(SIGTERM, previous) == SIG_IGN, 1);
+    vector[0] = 05000;
+    put16(65534, vector[0]);
+    syscall_test(S_EXECV, 04000, 65534, 0, 0);
+    check("BSD EXEC rejects wrapping vector", CC_C ? regs[0] : 0, EFAULT);
+    vector[0] = 65534;
+    vector[1] = 0;
+    memcpy(&dspace[03000], vector, 4);
+    memset(&dspace[65534], 'x', 2);
+    syscall_test(S_EXECVE, 04000, 03000, 0, 0);
+    check("BSD EXEC rejects unterminated argument", CC_C ? regs[0] : 0, EFAULT);
+    syscall_test(S_EXECVE, 04000, 0, 65535, 0);
+    check("BSD EXEC rejects invalid environment vector", CC_C ? regs[0] : 0, EFAULT);
+    syscall_test(S_EXECVE, 04000, 0, 03000, 0);
+    check("BSD EXEC rejects unterminated environment string", CC_C ? regs[0] : 0, EFAULT);
+    for (n = 0; n <= MAX_ARGS; n++)
+        vector[n] = 05000;
+    vector[MAX_ARGS + 1] = 0;
+    memcpy(&dspace[03000], vector, sizeof(vector));
+    syscall_test(S_EXECVE, 04000, 03000, 0, 0);
+    check("BSD EXEC rejects excess argument count", CC_C ? regs[0] : 0, E2BIG);
+    syscall_test(S_EXECVE, 04000, 0, 03000, 0);
+    check("BSD EXEC rejects excess environment count", CC_C ? regs[0] : 0, E2BIG);
+    Argc = Envc = 0;
+    Argv[0] = Envp[0] = NULL;
 }
 
 int main(int argc, char **argv)
