@@ -15,3 +15,7 @@ tests/loader
 tests/loader-sanitize
 tests/bsd
 tests/bsd-sanitize
+tests/signals
+tests/signals-sanitize
+tests/terminal
+tests/terminal-sanitize

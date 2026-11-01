@@ -632,8 +632,13 @@ void bsdtrap P((void)) /*@globals errno,stdout,stderr; @ */ ;
 int trap_ioctl P((void));
 
 /* bsd_signal.c */
-void set_bsdsig_dfl P((void));
+int bsd_signal_exec P((void));
 int do_sigaction P((int sig, int a, int oa));
+int bsd_native_signal P((int sig));
+int bsd_sigprocmask P((int how, unsigned set, unsigned oldset));
+int bsd_sigpending P((unsigned set));
+int32_t bsd_load_long P((unsigned addr));
+void bsd_store_long P((unsigned addr, int32_t value));
 #endif
 
 /* ke11a.c */

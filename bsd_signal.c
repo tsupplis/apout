@@ -7,6 +7,7 @@
  *	Code to deal with 2.11BSD signals
  */
 #include "defines.h"
+#ifdef EMU211
 #include <signal.h>
 #include "bsdtrap.h"
 
@@ -43,20 +44,10 @@
 #define BSDSIGWINCH	28	/* window size changes */
 #define BSDSIGUSR1	30	/* user defined signal 1 */
 #define BSDSIGUSR2	31	/* user defined signal 2 */
-#define bsdsigismember(set, signo) ((*(set) & (1L << ((signo) - 1))) != 0)
 
 #define	BSDSIG_ERR	-1
 #define	BSDSIG_DFL	 0
 #define	BSDSIG_IGN	 1
-
-/*
- * Signal vector "template" used in sigaction call.
- */
-struct bsd_sigaction {
-    int16_t sig_handler;	/* signal handler */
-    u_int32_t sa_mask;		/* signal mask to apply */
-    int16_t sa_flags;		/* see signal options below */
-};
 
 #define BSD_ONSTACK	0x0001	/* take signal on signal stack */
 #define BSD_RESTART	0x0002	/* restart system on signal return */
@@ -66,7 +57,7 @@ struct bsd_sigaction {
 
 /* Translate 2.11BSD signal value to our value */
 
-static int bsdsig[] = {
+static const int bsdsig[] = {
     0, SIGHUP, SIGINT, SIGQUIT, SIGILL, SIGTRAP, SIGIOT, SIGEMT,
     SIGFPE, SIGKILL, SIGBUS, SIGSEGV, SIGSYS, SIGPIPE, SIGALRM,
     SIGTERM, SIGURG, SIGSTOP, SIGTSTP, SIGCONT, SIGCHLD, SIGTTIN,
@@ -84,163 +75,152 @@ int bsd_signal_number(int native)
     return -1;
 }
 
-/* We keep a set of struct sigactions
- * for each 2.11BSD signal
- */
-struct bsd_sigaction Sigact[NBSDSIG];
+int bsd_native_signal(int sig)
+{
+    if (sig == 0)
+        return 0;
+    if (sig < 0 || sig >= NBSDSIG || !bsdsig[sig]) {
+        errno = EINVAL;
+        return -1;
+    }
+    return bsdsig[sig];
+}
 
-
-/* Set all signals to their default value */
-void set_bsdsig_dfl(void)
+static void native_mask(u_int32_t mask, sigset_t *native)
 {
     int i;
+    sigemptyset(native);
+    for (i = 1; i < NBSDSIG; i++)
+        if (bsdsig[i] && i != BSDSIGKILL && i != BSDSIGSTOP &&
+            (mask & ((u_int32_t) 1 << (i - 1))))
+            sigaddset(native, bsdsig[i]);
+}
 
-    for (i = 0; i < NBSDSIG; i++) {
-        if (bsdsig[i])
-            signal(bsdsig[i], SIG_DFL);
-        Sigact[i].sig_handler = BSDSIG_DFL;
-        Sigact[i].sa_mask = Sigact[i].sa_flags = 0;
+static u_int32_t guest_mask(const sigset_t *native)
+{
+    int i;
+    u_int32_t mask = 0;
+    for (i = 1; i < NBSDSIG; i++)
+        if (bsdsig[i] && sigismember(native, bsdsig[i]) == 1)
+            mask |= (u_int32_t) 1 << (i - 1);
+    return mask;
+}
+
+/* Exec preserves ignored dispositions and the process signal mask. */
+int bsd_signal_exec(void)
+{
+    struct sigaction action;
+    int i;
+    for (i = 1; i < NBSDSIG; i++) {
+        if (!bsdsig[i] || i == BSDSIGKILL || i == BSDSIGSTOP)
+            continue;
+        if (sigaction(bsdsig[i], NULL, &action) == -1)
+            return -1;
+        if (action.sa_handler != SIG_DFL && action.sa_handler != SIG_IGN) {
+            memset(&action, 0, sizeof(action));
+            sigemptyset(&action.sa_mask);
+            action.sa_handler = SIG_DFL;
+            if (sigaction(bsdsig[i], &action, NULL) == -1)
+                return -1;
+        }
     }
+    return 0;
 }
 
 int do_sigaction(int sig, int a, int oa)
 {
-    int i;
-    struct bsd_sigaction *act, *oact;
-    struct sigaction ouraction;
+    struct sigaction action, old;
+    u_int16_t handler = 0, flags = 0;
+    int native = bsd_native_signal(sig);
 
-    if ((sig < 0) || (sig >= NBSDSIG))
-        return (EINVAL);
-
-    if (oa) {
-        oact = (struct bsd_sigaction *) &dspace[oa];
-        memcpy(oact, &Sigact[sig], sizeof(struct bsd_sigaction));
+    if (native <= 0 || (a && (sig == BSDSIGKILL || sig == BSDSIGSTOP))) {
+        errno = EINVAL;
+        return -1;
     }
-
+    if ((a && !valid_dspace_range(a, 8)) ||
+        (oa && !valid_dspace_range(oa, 8)))
+        return -1;
+    memset(&action, 0, sizeof(action));
     if (a) {
-        act = (struct bsd_sigaction *) &dspace[a];
-
-        /* If required, map mask here */
-        /* Currently, the assumption is a 1-1 match */
-        sigemptyset(&(ouraction.sa_mask));
-        for (i = 1; i < NBSDSIG; i++) {
-            if bsdsigismember
-            (&(act->sa_mask), i)
-                sigaddset(&(ouraction.sa_mask), i);
+        memcpy(&handler, &dspace[a], 2);
+        memcpy(&flags, &dspace[a + 6], 2);
+        if (flags & ~(BSD_ONSTACK | BSD_RESTART | BSD_DISABLE | BSD_NOCLDSTOP)) {
+            errno = EINVAL;
+            return -1;
         }
-        /* If required, map flags here */
-        ouraction.sa_flags = act->sa_flags;
-        ouraction.sa_handler = sigcatcher;
+        /* Native SIGCHLD ignore can auto-reap; BSD still permits wait4. */
+        if (handler > BSDSIG_IGN || (sig == BSDSIGCHLD && handler == BSDSIG_IGN)) {
+            errno = ENOSYS;
+            return -1;
+        }
+        action.sa_handler = handler == BSDSIG_IGN ? SIG_IGN : SIG_DFL;
+        native_mask((u_int32_t) bsd_load_long(a + 2), &action.sa_mask);
+        if (flags & BSD_ONSTACK)
+            action.sa_flags |= SA_ONSTACK;
+        if (flags & BSD_RESTART)
+            action.sa_flags |= SA_RESTART;
+        if (flags & BSD_NOCLDSTOP)
+            action.sa_flags |= SA_NOCLDSTOP;
     }
-
-    i = sigaction(bsdsig[sig], &ouraction, NULL);
-    if (i == -1)
-        return (i);
-
-    /* Else save the new sigaction */
-    act = (struct bsd_sigaction *) &dspace[a];
-    memcpy(&Sigact[sig], act, sizeof(struct bsd_sigaction));
-    return (i);
+    if (sigaction(native, NULL, &old) == -1)
+        return -1;
+    if (oa && old.sa_handler != SIG_DFL && old.sa_handler != SIG_IGN) {
+        errno = ENOSYS;
+        return -1;
+    }
+    if (a && sigaction(native, &action, NULL) == -1)
+        return -1;
+    if (oa) {
+        handler = old.sa_handler == SIG_IGN ? BSDSIG_IGN : BSDSIG_DFL;
+        flags = 0;
+        if (old.sa_flags & SA_ONSTACK)
+            flags |= BSD_ONSTACK;
+        if (old.sa_flags & SA_RESTART)
+            flags |= BSD_RESTART;
+        if (old.sa_flags & SA_NOCLDSTOP)
+            flags |= BSD_NOCLDSTOP;
+        memcpy(&dspace[oa], &handler, 2);
+        bsd_store_long(oa + 2, guest_mask(&old.sa_mask));
+        memcpy(&dspace[oa + 6], &flags, 2);
+    }
+    return 0;
 }
 
+int bsd_sigprocmask(int how, unsigned set, unsigned oldset)
+{
+    sigset_t mask, oldmask;
+    int native_how = SIG_SETMASK;
+    if ((set && !valid_dspace_range(set, 4)) ||
+        (oldset && !valid_dspace_range(oldset, 4)))
+        return -1;
+    if (set) {
+        switch (how) {
+        case 1: native_how = SIG_BLOCK; break;
+        case 2: native_how = SIG_UNBLOCK; break;
+        case 3: native_how = SIG_SETMASK; break;
+        default:
+            errno = EINVAL;
+            return -1;
+        }
+        native_mask((u_int32_t) bsd_load_long(set), &mask);
+    }
+    if (sigprocmask(native_how, set ? &mask : NULL, &oldmask) == -1)
+        return -1;
+    if (oldset)
+        bsd_store_long(oldset, guest_mask(&oldmask));
+    return 0;
+}
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-/* For now, the rest commented out. One day I might
- * get around to implementing 2.11BSD signals properly
- */
-
-#if 0
-int (*signal()) ();
-
-typedef unsigned long sigset_t;
-
-
-/*
- * Flags for sigprocmask:
- */
-#define	BSDSIG_BLOCK	1	/* block specified signal set */
-#define	BSDSIG_UNBLOCK	2	/* unblock specified signal set */
-#define	BSDSIG_SETMASK	3	/* set specified signal set */
-
-typedef int (*sig_t) ();	/* type of signal function */
-
-/*
- * Structure used in sigaltstack call.
- */
-struct sigaltstack {
-    char *ss_base;		/* signal stack base */
-    int ss_size;		/* signal stack length */
-    int ss_flags;		/* SA_DISABLE and/or SA_ONSTACK */
-};
-#define	MINBSDSIGSTKSZ	128	/* minimum allowable stack */
-#define	BSDSIGSTKSZ	(MINBSDSIGSTKSZ + 384)	/* recommended stack size */
-
-/*
- * 4.3 compatibility:
- * Signal vector "template" used in sigvec call.
- */
-struct sigvec {
-    int (*sv_handler) ();	/* signal handler */
-    long sv_mask;		/* signal mask to apply */
-    int sv_flags;		/* see signal options below */
-};
-#define SV_ONSTACK	SA_ONSTACK	/* take signal on signal stack */
-#define SV_INTERRUPT	SA_RESTART	/* same bit, opposite sense */
-#define sv_onstack sv_flags	/* isn't compatibility wonderful! */
-
-/*
- * 4.3 compatibility:
- * Structure used in sigstack call.
- */
-struct sigstack {
-    char *ss_sp;		/* signal stack pointer */
-    int ss_onstack;		/* current status */
-};
-
-/*
- * Information pushed on stack when a signal is delivered.
- * This is used by the kernel to restore state following
- * execution of the signal handler.  It is also made available
- * to the handler to allow it to properly restore state if
- * a non-standard exit is performed.
- */
-struct sigcontext {
-    int sc_onstack;		/* sigstack state to restore */
-    long sc_mask;		/* signal mask to restore */
-    int sc_sp;			/* sp to restore */
-    int sc_fp;			/* fp to restore */
-    int sc_r1;			/* r1 to restore */
-    int sc_r0;			/* r0 to restore */
-    int sc_pc;			/* pc to restore */
-    int sc_ps;			/* psl to restore */
-    int sc_ovno			/* overlay to restore */
-};
-
-/*
- * Macro for converting signal number to a mask suitable for
- * sigblock().
- */
-#define sigmask(m)		(1L << ((m)-1))
-#define sigaddset(set, signo)	(*(set) |= 1L << ((signo) - 1), 0)
-#define sigdelset(set, signo)	(*(set) &= ~(1L << ((signo) - 1)), 0)
-#define sigemptyset(set)	(*(set) = (sigset_t)0, (int)0)
-#define sigfillset(set)         (*(set) = ~(sigset_t)0, (int)0)
-#define sigismember(set, signo) ((*(set) & (1L << ((signo) - 1))) != 0)
-
-#endif				/* 0 */
+int bsd_sigpending(unsigned set)
+{
+    sigset_t pending;
+    if (!set) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!valid_dspace_range(set, 4) || sigpending(&pending) == -1)
+        return -1;
+    bsd_store_long(set, guest_mask(&pending));
+    return 0;
+}
+#endif

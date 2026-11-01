@@ -52,14 +52,14 @@ static int16_t map_fcntl P((int16_t f));
 #endif
 #undef P
 
-static int32_t bsd_load_long(unsigned addr)
+int32_t bsd_load_long(unsigned addr)
 {
     u_int16_t words[2];
     memcpy(words, &dspace[addr], sizeof(words));
     return (int32_t) (((u_int32_t) words[0] << 16) | words[1]);
 }
 
-static void bsd_store_long(unsigned addr, int32_t value)
+void bsd_store_long(unsigned addr, int32_t value)
 {
     u_int16_t words[2] = {(u_int32_t) value >> 16, (u_int16_t) value};
     memcpy(&dspace[addr], words, sizeof(words));
@@ -323,19 +323,29 @@ void bsdtrap()
     case S_OLDLOCK:	/* DONE - ok syscall */
     case S_OLDPHYS:	/* DONE - ok syscall */
     case S_FSTATFS:	/* DONE - ok syscall */
-    case S_SIGPROCMASK:	/* DONE - ok syscall */
-    case S_SIGRETURN:	/* DONE - ok syscall */
-    case S_SIGALTSTACK:	/* DONE - ok syscall */
     case S_VHANGUP:	/* DONE - ok syscall */
         i = 0;
         break;
-    case S_SIGACTION:	/* DONE */
-#define NO_SIGNALS_YET
-#ifdef NO_SIGNALS_YET
-        i = 0;
-#else
-        i = do_sigaction(uarg1, uarg2, uarg3);
-#endif
+    case S_SIGACTION:
+        /* libc supplies its trampoline before the three public arguments. */
+        i = do_sigaction(uarg2, uarg3, uarg4);
+        break;
+    case S_SIGPROCMASK:
+        i = bsd_sigprocmask(uarg1, uarg2, uarg3);
+        break;
+    case S_SIGPENDING:
+        i = bsd_sigpending(uarg1);
+        break;
+    case S_SIGRETURN:
+    case S_SIGALTSTACK:
+    case S_SIGSUSPEND:
+    case S_SIGVEC:
+    case S_SIGBLOCK:
+    case S_SIGSETMASK:
+    case S_SIGPAUSE:
+    case S_SIGSTACK:
+        i = -1;
+        errno = ENOSYS;
         break;
     case S_IOCTL:		/* DONE a bit */
         i = trap_ioctl();
@@ -772,10 +782,12 @@ dostat:
         i = ftruncate(sarg1, larg1);
         break;
     case S_KILL:		/* DONE */
-        i = kill(sarg1, sarg2);
+        j = bsd_native_signal(sarg2);
+        i = j == -1 ? -1 : kill(sarg1, j);
         break;
     case S_KILLPG:		/* DONE */
-        i = killpg(sarg1, sarg2);
+        j = bsd_native_signal(sarg2);
+        i = j == -1 ? -1 : killpg(sarg1, j);
         break;
     case S_CHOWN:		/* DONE */
         buf = xlate_filename((char *) &dspace[uarg1]);
@@ -1200,8 +1212,6 @@ static int trap_execve(int want_env)
     name = xlate_filename(origpath);
     TrapDebug((dbg_file, "%s Execing %s (%s) ", progname, name, origpath));
 
-    set_bsdsig_dfl();		/* Set signals to default values */
-
     cptr = uarg2;
     Argc = 0;
     Envc = 0;
@@ -1241,6 +1251,8 @@ static int trap_execve(int want_env)
             errno = ENOENT;
         return (-1);
     }
+    if (bsd_signal_exec() == -1)
+        return -1;
     run();			/* Ok, so it's recursive, I dislike setjmp */
     return (0);			/* Just to shut the compiler up */
 }

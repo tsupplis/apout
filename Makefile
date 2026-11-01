@@ -50,6 +50,7 @@ CORE_SRCS= cpu.c branch.c double.c single.c ea.c fp.c ke11a.c itab.c
 SYSCALL_SRCS= $(CORE_SRCS) aout.c bsdtrap.c bsd_ioctl.c bsd_signal.c magic.c v1trap.c
 LOADER_SRCS= $(filter-out aout.c,$(SYSCALL_SRCS)) v7trap.c
 BSD_TEST_SRCS= $(filter-out bsdtrap.c,$(SYSCALL_SRCS)) v7trap.c
+TERMINAL_TEST_SRCS= $(filter-out bsd_ioctl.c,$(SYSCALL_SRCS)) v7trap.c
 TEST_HEADERS= defines.h aout.h v7trap.h bsdtrap.h v1trap.h
 PDP11_FIXTURES?= $(HOME)/Emulation/PDP11
 
@@ -70,11 +71,19 @@ tests/loader: tests/loader.c tests/main.o $(LOADER_SRCS) aout.c $(TEST_HEADERS) 
 tests/bsd: tests/bsd.c tests/main.o $(BSD_TEST_SRCS) bsdtrap.c $(TEST_HEADERS) Makefile
 	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(BSD_TEST_SRCS) tests/main.o tests/bsd.c -o $@ $(LIBS)
 
-test: tests/core tests/syscalls tests/loader tests/bsd
+tests/signals: tests/signals.c tests/main.o $(BSD_TEST_SRCS) bsdtrap.c $(TEST_HEADERS) Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(BSD_TEST_SRCS) tests/main.o tests/signals.c -o $@ $(LIBS)
+
+tests/terminal: tests/terminal.c tests/main.o $(TERMINAL_TEST_SRCS) bsd_ioctl.c $(TEST_HEADERS) Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(TERMINAL_TEST_SRCS) tests/main.o tests/terminal.c -o $@ $(LIBS)
+
+test: tests/core tests/syscalls tests/loader tests/bsd tests/signals tests/terminal
 	./tests/core
 	./tests/syscalls
 	./tests/loader
 	./tests/bsd
+	./tests/signals
+	./tests/terminal
 
 test-sanitize:
 	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
@@ -94,6 +103,14 @@ test-sanitize:
 		-fno-sanitize-recover=all $(BSD_TEST_SRCS) tests/main-sanitize.o \
 		tests/bsd.c -o tests/bsd-sanitize $(LIBS)
 	./tests/bsd-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(BSD_TEST_SRCS) tests/main-sanitize.o \
+		tests/signals.c -o tests/signals-sanitize $(LIBS)
+	./tests/signals-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(TERMINAL_TEST_SRCS) tests/main-sanitize.o \
+		tests/terminal.c -o tests/terminal-sanitize $(LIBS)
+	./tests/terminal-sanitize
 
 test-smoke: apout
 	sh tests/smoke.sh "$(CURDIR)/apout" "$(PDP11_FIXTURES)"
@@ -111,6 +128,7 @@ clean:
 	rm -f tests/core tests/core-sanitize tests/syscalls tests/syscalls-sanitize \
 		tests/loader tests/loader-sanitize tests/main.o tests/main-sanitize.o
 	rm -f tests/bsd tests/bsd-sanitize
+	rm -f tests/signals tests/signals-sanitize tests/terminal tests/terminal-sanitize
 	rm -rf apout *core $(OBJS) *.dbg $(VERSION) $(VERSION).tar.gz apout.0
 
 apout.0: apout.1
