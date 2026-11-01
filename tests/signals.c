@@ -272,6 +272,7 @@ int main(int argc, char **argv)
     ispace = (u_int8_t *) imem;
     dspace = (u_int8_t *) dmem;
     Binary = IS_211BSD;
+    require(set_apout_root("/") == 0, "initialize pathname translation");
     action_tests();
     kill_tests();
     /* Do not raise a default-fatal signal if the mask APIs failed. */
