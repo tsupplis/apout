@@ -28,7 +28,7 @@ contains tar archives of a.out binaries from several versions of UNIX.
 The program is now at release 2.4.0 Most of the binaries from V5, V6
 and V7 run fine. All of the V5/V6/V7 system calls are caught, but some are
 ignored and some generate EPERM errors. The V1, V2, 2.9BSD and 2.11BSD
-environments are still under construction: see the file LIMITATIONS for
+environments are still under construction: see [limitations.md](limitations.md) for
 details. Finally, the simulator won't run on a big-endian machine.
 
 ## Installation
@@ -71,6 +71,11 @@ resource-limit changes run only in a child, and setgroups tests use a stub.
 Wait4 tests cover reaping, stopped/signaled children, NULL outputs and WNOHANG.
 BSD ioctl tests use a private pseudoterminal and include invalid buffers,
 canonical request codes, window sizes and failure-output preservation.
+Dedicated terminal regressions check RAW/CBREAK/cooked transitions, parity,
+control characters, speeds and input flushing on a private pseudoterminal.
+BSD signal regressions run in a disposable child and cover the trampoline-first
+sigaction ABI, masks, pending signals, exec transitions and signal-number mapping.
+Kill/killpg tests use stubs and never signal unrelated processes.
 `make test-sanitize` runs the same checks with AddressSanitizer
 and UndefinedBehaviorSanitizer (a supporting compiler is required).
 Tests use private memory, a pseudoterminal, private Unix socket paths and
@@ -116,9 +121,23 @@ BSD wait4 checks status/usage buffers before waiting and leaves outputs untouche
 on errors or WNOHANG without an event. Reported signals use BSD numbering; child
 overlay counts are unavailable and reported as zero. A host signal without a BSD
 equivalent returns `EOVERFLOW` if status is requested (the child may already be reaped).
-Supported BSD ioctl buffers are checked and staged; unknown requests now fail
-with `ENOTTY` rather than silently succeeding. Full BSD terminal-mode translation
-and host-to-guest process-ID virtualization remain incomplete.
+Supported BSD ioctl buffers are checked and staged; unknown requests fail with
+`ENOTTY`. Terminal conversion covers RAW/CBREAK/cooked modes, echo, parity,
+CRMOD, TANDEM, control characters and the 16 BSD speeds. Invalid guest speeds
+return `EINVAL`; unrepresentable native speeds return `EOVERFLOW`, not a hangup
+speed. TIOCSETP flushes input; TIOCSETN preserves it except for RAW transitions,
+matching BSD. Historical delay/local flags and job-control details are not fully
+translated. Hosts without delayed suspend report it disabled and reject attempts
+to enable it with `ENOSYS`.
+BSD sigaction supports default/ignored dispositions, translated masks and flags,
+and bounded queries. Guest signal handlers, alternate stacks, signal return,
+signal suspension and legacy signal APIs return `ENOSYS` instead of silently
+succeeding. Ignoring SIGCHLD is also rejected because native auto-reaping would
+break BSD wait semantics. Sigprocmask and sigpending use the guest 32-bit mask
+layout; kill/killpg translate guest signal numbers. Failed exec preserves signal
+dispositions; successful exec preserves ignored dispositions and the signal mask.
+Guest handler delivery and host-to-guest process-ID virtualization remain
+unimplemented; large host PIDs can still be truncated in guest process results.
 `APOUT_ROOT` is a pathname prefix, not a filesystem sandbox.
 
 ## Running binaries

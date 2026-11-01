@@ -85,7 +85,7 @@ kernel source code, dated 1973, with the 5th Edition development tools.
 
 Added better detection of some special UNIX a.out binaries: the
 environment for these binaries was being incorrectly set by aout.c.
-There is now a magic.c which fixes the problem. See also LIMITATIONS
+There is now a magic.c which fixes the problem. See also limitations.md
 for a note of bugs in some a.out binaries.
 
 Modified v7trap.c to be much cleaner, and to look a bit more like
