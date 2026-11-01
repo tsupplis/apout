@@ -140,6 +140,12 @@ int do_sigaction(int sig, int a, int oa)
     if ((a && !valid_dspace_range(a, 8)) ||
         (oa && !valid_dspace_range(oa, 8)))
         return -1;
+    if (sig == BSDSIGKILL || sig == BSDSIGSTOP) {
+        const u_int16_t uncatchable[4] = {BSDSIG_DFL, 0, 0, BSD_RESTART};
+        if (oa)
+            memcpy(&dspace[oa], uncatchable, sizeof(uncatchable));
+        return 0;
+    }
     memset(&action, 0, sizeof(action));
     if (a) {
         memcpy(&handler, &dspace[a], 2);
