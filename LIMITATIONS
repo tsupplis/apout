@@ -75,8 +75,13 @@ what syscalls have been implemented, grep for the word DONE in bsdtrap.c.
 
 The time, interval-timer and resource-usage calls translate 32-bit guest
 values rather than copying host-sized fields. socketpair returns both guest
-file descriptors. Covered I/O and time/resource buffers are bounds-checked;
-this is not comprehensive validation of filenames or socket addresses.
+file descriptors. Covered I/O, socket-address and time/resource buffers are
+bounds-checked; this is not comprehensive validation of filenames or all syscall
+buffers. Unix and IPv4 socket-address headers are translated, with BSD copied-length
+semantics on output truncation. Unix socket paths still use native pathname
+handling and native path-length limits; other historical address-family layouts
+are not translated. accept and recvfrom allow NULL address outputs without a
+length pointer.
 Signal-handler delivery is still disabled: sigaction, sigprocmask,
 sigreturn and sigaltstack currently return success without implementing
 the requested behavior.

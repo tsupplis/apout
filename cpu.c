@@ -173,6 +173,46 @@ int valid_dspace_range(u_int16_t addr, size_t length)
     return 1;
 }
 
+int valid_guest_string(u_int16_t addr)
+{
+    if (!valid_dspace_range(addr, 1))
+        return 0;
+    if (memchr(&dspace[addr], 0, PDP_MEM_SIZE - (size_t) addr) == NULL) {
+        errno = EFAULT;
+        return 0;
+    }
+    return 1;
+}
+
+static int valid_exec_vector(u_int16_t addr)
+{
+    unsigned cursor, count;
+    u_int16_t string;
+
+    if (!addr)
+        return 1;
+    for (cursor = addr, count = 0; ; cursor += 2, count++) {
+        if ((cursor & 1) || cursor > PDP_MEM_SIZE - 2) {
+            errno = EFAULT;
+            return 0;
+        }
+        memcpy(&string, &dspace[cursor], 2);
+        if (!string)
+            return 1;
+        if (count >= MAX_ARGS - 1) {
+            errno = E2BIG;
+            return 0;
+        }
+        if (!valid_guest_string(string))
+            return 0;
+    }
+}
+
+int valid_guest_exec_args(u_int16_t argv, u_int16_t envp, int want_env)
+{
+    return valid_exec_vector(argv) && (!want_env || valid_exec_vector(envp));
+}
+
 void bus_error(int signo)
 {
     fprintf(stderr, "Apout - bus error at PC 0%06o\n", regs[PC]);

@@ -121,6 +121,33 @@ void v7trap()
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
                v7trap_name[trapnum]));
 
+    i = 0;
+    switch (trapnum) {
+    case S_LINK:
+        i = 2;
+        break;
+    case S_STAT:
+        i = uarg1 ? 1 : 0;
+        break;
+    case S_ACCESS:
+    case S_UTIME:
+    case S_UNLINK:
+    case S_OPEN:
+    case S_MKNOD:
+    case S_CHMOD:
+    case S_CHOWN:
+    case S_CHROOT:
+    case S_CHDIR:
+    case S_CREAT:
+        i = 1;
+        break;
+    }
+    if ((i && !valid_guest_pathname(uarg1)) ||
+        (i == 2 && !valid_guest_pathname(uarg2))) {
+        i = -1;
+        goto done;
+    }
+
     switch (trapnum) {
     /* These syscalls are not implemented, and */
     /* always return EPERM to the caller */
@@ -335,7 +362,7 @@ void v7trap()
         tb->dstflag = tz.tz_dsttime;
         break;
     case S_STAT:
-        buf = xlate_filename((char *) &dspace[uarg1]);
+        buf = uarg1 ? xlate_filename((char *) &dspace[uarg1]) : ".";
         if (buf[0] == '\0')
             buf = ".";	/* Not documented anywhere */
         if (uarg1 == 0)
@@ -544,8 +571,7 @@ dostat:
             errno = ENOENT;
             break;
         }
-        set_apout_root(buf);
-        i = 0;
+        i = set_apout_root(buf);
         break;
     case S_CHDIR:
         buf = xlate_filename((char *) &dspace[uarg1]);
@@ -623,6 +649,7 @@ dostat:
         exit(1);
     }
 
+done:
     /* Set r0 to either errno or i, */
     /* and clear/set C bit */
 
@@ -655,7 +682,12 @@ static int trap_exec(int want_env)
     u_int16_t cptr, cptr2;
     char *buf, *name, *origpath;
 
+    if (!valid_guest_pathname(uarg1) ||
+        !valid_guest_exec_args(uarg2, uarg3, want_env))
+        return -1;
     origpath = strdup((char *) &dspace[uarg1]);
+    if (origpath == NULL)
+        return -1;
     name = xlate_filename(origpath);
     TrapDebug((dbg_file, "%s Execing %s ", progname, name));
 
@@ -666,7 +698,7 @@ static int trap_exec(int want_env)
 
     Argc = 0;
     Envc = 0;
-    while (Argc < MAX_ARGS) {
+    while (cptr && Argc < MAX_ARGS - 1) {
         ll_word(cptr, cptr2);
         if (cptr2 == 0)
             break;
@@ -680,7 +712,7 @@ static int trap_exec(int want_env)
 
     if (want_env) {
         cptr = uarg3;
-        while (Envc < MAX_ARGS) {
+        while (cptr && Envc < MAX_ARGS - 1) {
             ll_word(cptr, cptr2);
             if (cptr2 == 0)
                 break;
@@ -696,6 +728,7 @@ static int trap_exec(int want_env)
             free(Argv[Argc]);
         for (Envc--; Envc >= 0; Envc--)
             free(Envp[Envc]);
+        free(origpath);
         errno = ENOENT;
         return (-1);
     }

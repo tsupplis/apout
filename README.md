@@ -62,10 +62,12 @@ compile ok. You will eventually get the apout program.
 ## Regression tests
 
 Run `make test` for loader alignment, instruction, floating-point, KE11A, terminal and signal
-regressions, plus BSD time/timer calls, resource usage, vectors and socket pairs.
+regressions, plus BSD time/timer calls, resource usage, vectors, socket pairs
+and Unix/IPv4 socket-address translation (including truncation and invalid buffers).
 `make test-sanitize` runs the same checks with AddressSanitizer
 and UndefinedBehaviorSanitizer (a supporting compiler is required).
-Tests use private memory and a pseudoterminal, not your current terminal.
+Tests use private memory, a pseudoterminal, private Unix socket paths and
+IPv4 loopback ports, not your current terminal or external network services.
 Expected error-path checks print diagnostics and must exit cleanly.
 
 Run `make test-smoke` to exercise real V6, V7 and 2.11BSD binaries.
@@ -83,6 +85,10 @@ Odd or out-of-range word accesses report a bus error; this is not comprehensive
 validation of all guest buffers passed to host syscalls. Scalar read/write
 buffers are bounded for V1/V2/V5/V6/V7/BSD; BSD vector, send/receive and the
 covered time/resource outputs are also checked.
+BSD bind/connect addresses and accept/name/recvfrom outputs are bounded and
+translated between guest and native family headers. Truncated address outputs
+report bytes copied, matching 2.11BSD. Unix socket paths retain native pathname
+handling; other historical address-family layouts are not translated.
 
 ## Running binaries
 

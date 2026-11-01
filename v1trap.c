@@ -99,6 +99,31 @@ void v1trap()
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
                v1trap_name[trapnum]));
 
+    i = 0;
+    switch (trapnum) {
+    case V1_LINK:
+        i = 2;
+        break;
+    case V1_STAT:
+    case V1_SMDATE:
+        i = uarg1 ? 1 : 0;
+        break;
+    case V1_UNLINK:
+    case V1_OPEN:
+    case V1_CHMOD:
+    case V1_MKDIR:
+    case V1_CHOWN:
+    case V1_CHDIR:
+    case V1_CREAT:
+        i = 1;
+        break;
+    }
+    if ((i && !valid_guest_pathname(uarg1)) ||
+        (i == 2 && !valid_guest_pathname(uarg2))) {
+        i = -1;
+        goto done;
+    }
+
     switch (trapnum) {
 
     /* XXX STILL TO DO: V1_GTTY, V1_STTY, V1_TELL */
@@ -142,7 +167,7 @@ void v1trap()
 #define EPOCH71	31536000	/* # seconds from 1970 to 1971 */
 #define EPOCH72	63072000	/* # seconds from 1970 to 1972 */
     case V1_SMDATE:
-        buf = xlate_filename((char *) &dspace[uarg1]);
+        buf = uarg1 ? xlate_filename((char *) &dspace[uarg1]) : ".";
         if (buf[0] == '\0')
             buf = ".";	/* Not documented anywhere */
         if (uarg1 == 0)
@@ -260,7 +285,7 @@ void v1trap()
         TrapDebug((dbg_file, " on fd %d return %d ", sarg1, i));
         break;
     case V1_STAT:
-        buf = xlate_filename((char *) &dspace[uarg1]);
+        buf = uarg1 ? xlate_filename((char *) &dspace[uarg1]) : ".";
         if (buf[0] == '\0')
             buf = ".";	/* Not documented anywhere */
         if (uarg1 == 0)
@@ -518,6 +543,7 @@ dostat:
         exit(1);
     }
 
+done:
     /* Clear C bit if no error, or */
     /* set C bit as there was an error */
 
@@ -540,14 +566,19 @@ static int v1trap_exec(void)
     u_int16_t cptr, cptr2;
     char *buf, *name, *origpath;
 
+    if (!valid_guest_pathname(uarg1) ||
+        !valid_guest_exec_args(uarg2, 0, 0))
+        return -1;
     origpath = strdup((char *) &dspace[uarg1]);
+    if (origpath == NULL)
+        return -1;
     name = xlate_filename(origpath);
     TrapDebug((dbg_file, "%s Execing %s ", progname, name));
 
     cptr = uarg2;
 
     Argc = 0;
-    while (Argc < MAX_ARGS) {
+    while (cptr && Argc < MAX_ARGS - 1) {
         ll_word(cptr, cptr2);
         if (cptr2 == 0)
             break;
@@ -562,6 +593,7 @@ static int v1trap_exec(void)
     if (load_a_out(name, origpath, 0) == -1) {
         for (Argc--; Argc >= 0; Argc--)
             free(Argv[Argc]);
+        free(origpath);
         return (-1);
     }
     run();			/* Ok, so it's recursive, I dislike setjmp */

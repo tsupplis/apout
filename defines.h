@@ -515,6 +515,9 @@ void run P((void));
 void sim_init P((void));
 void bus_error P((int));
 int valid_dspace_range P((u_int16_t addr, size_t length));
+int valid_guest_string P((u_int16_t addr));
+int valid_guest_pathname P((u_int16_t addr));
+int valid_guest_exec_args P((u_int16_t argv, u_int16_t envp, int want_env));
 void seg_fault P((void));
 void waiti P((void));
 void halt P((void));
@@ -578,7 +581,7 @@ void dositab1 P((void));
 int main P((int argc, char **argv));
 void usage P((void));
 char *xlate_filename P((char *name));
-void set_apout_root P((char *dirname));
+int set_apout_root P((char *dirname));
 
 /* magic.c */
 int special_magic P((u_int16_t * cptr));

@@ -23,6 +23,8 @@
 #include <sys/file.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
+#include <sys/un.h>
+#include <stddef.h>
 #include <sys/uio.h>
 #include "bsdtrap.h"
 #ifdef __linux__
@@ -75,6 +77,91 @@ static void bsd_store_timeval(unsigned addr, const struct timeval *value)
     bsd_store_long(addr + 4, value->tv_usec);
 }
 
+static int bsd_load_sockaddr(u_int16_t addr, unsigned length,
+                             struct sockaddr_storage *value, socklen_t *size)
+{
+    struct sockaddr header;
+    struct sockaddr_un local;
+    u_int16_t family;
+    const unsigned char *end;
+    size_t path_length;
+
+    if (length < 2 || length > sizeof(*value)) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!valid_dspace_range(addr, length))
+        return -1;
+    memcpy(&family, &dspace[addr], 2);
+    memset(value, 0, sizeof(*value));
+    memset(&header, 0, sizeof(header));
+    header.sa_family = family;
+    if (header.sa_family != family) {
+        errno = EAFNOSUPPORT;
+        return -1;
+    }
+    *size = length;
+    if (family == AF_UNIX) {
+        /* 2.11BSD's path field is 108 bytes, including any supplied padding. */
+        if (length > 110 || length == 2) {
+            errno = EINVAL;
+            return -1;
+        }
+        end = memchr(&dspace[addr + 2], 0, length - 2);
+        path_length = end ? (size_t) (end - &dspace[addr + 2]) + 1 : length - 2;
+        if (path_length > sizeof(local.sun_path)) {
+            errno = ENAMETOOLONG;
+            return -1;
+        }
+        memset(&local, 0, sizeof(local));
+        local.sun_family = family;
+        memcpy(local.sun_path, &dspace[addr + 2], path_length);
+        *size = offsetof(struct sockaddr_un, sun_path) + path_length;
+#ifndef __linux__
+        local.sun_len = *size;
+#endif
+        memcpy(value, &local, *size);
+    } else {
+#ifndef __linux__
+        header.sa_len = *size;
+#endif
+        memcpy(value, &header, 2);
+        memcpy((unsigned char *) value + 2, &dspace[addr + 2], length - 2);
+    }
+    return 0;
+}
+
+static int bsd_prepare_sockaddr(u_int16_t addr, u_int16_t length_addr,
+                                u_int16_t *capacity)
+{
+    if (!valid_dspace_range(length_addr, 2))
+        return -1;
+    memcpy(capacity, &dspace[length_addr], 2);
+    return valid_dspace_range(addr, *capacity) ? 0 : -1;
+}
+
+static int bsd_store_sockaddr(u_int16_t addr, u_int16_t length_addr,
+                              u_int16_t capacity,
+                              const struct sockaddr_storage *value,
+                              socklen_t size)
+{
+    u_int16_t family = value->ss_family;
+    u_int16_t copied;
+
+    if (size > sizeof(*value)) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    /* 2.11BSD returns the copied length, not the untruncated native length. */
+    copied = size < capacity ? size : capacity;
+    if (copied)
+        memcpy(&dspace[addr], &family, copied < 2 ? copied : 2);
+    if (copied > 2)
+        memcpy(&dspace[addr + 2], (const unsigned char *) value + 2, copied - 2);
+    memcpy(&dspace[length_addr], &copied, 2);
+    return 0;
+}
+
 void bsdtrap()
 {
     int i, j, len, pid, pfd[2];
@@ -89,8 +176,9 @@ void bsdtrap()
     struct tr_timezone guest_zone;
     struct timezone zone;	/* used in GETTIMEOFDAY */
     struct itimerval tval, oltval;	/* used in itimer calls */
-    struct tr_sockaddr *tr_sock;	/* used in socket calls */
-    struct sockaddr sock;	/* used in socket calls */
+    struct sockaddr_storage sock;
+    socklen_t sock_length;
+    u_int16_t sock_capacity;
     gid_t *gidset;		/* used in GETGROUPS */
     struct tr_rlimit *tr_rlp;	/* used in rlimit calls */
     struct rlimit rlp;		/* used in rlimit calls */
@@ -107,6 +195,43 @@ void bsdtrap()
     A = (arglist *) & dspace[(regs[SP] + 2)];
 
     i = errno = 0;
+    switch (ir & 0xff) {
+    case S_LINK:
+    case S_SYMLINK:
+    case S_RENAME:
+        i = 2;
+        break;
+    case S_ACCT:
+        i = uarg1 ? 1 : 0;
+        break;
+    case S_READLINK:
+    case S_ACCESS:
+    case S_MKDIR:
+    case S_RMDIR:
+    case S_LSTAT:
+    case S_STAT:
+    case S_UTIMES:
+    case S_UNLINK:
+    case S_OPEN:
+    case S_MKNOD:
+    case S_CHMOD:
+    case S_TRUNCATE:
+    case S_CHOWN:
+    case S_CHROOT:
+    case S_CHDIR:
+#ifndef NO_CHFLAGS
+    case S_CHFLAGS:
+#endif
+    case S_CREAT:
+        i = 1;
+        break;
+    }
+    if ((i && !valid_guest_pathname(uarg1)) ||
+        (i == 2 && !valid_guest_pathname(uarg2))) {
+        i = -1;
+        goto done;
+    }
+    i = 0;
     switch (ir & 0xff) {
     case S_INDIR:
         (void) printf("Does 2.11BSD use INDIR? I don't think so\n");
@@ -289,7 +414,7 @@ void bsdtrap()
         i = rmdir(buf);
         break;
     case S_ACCT:		/* DONE */
-        buf = xlate_filename((char *) &dspace[uarg1]);
+        buf = uarg1 ? xlate_filename((char *) &dspace[uarg1]) : NULL;
         i = acct(buf);
         break;
     case S_WRITEV:		/* DONE */
@@ -605,8 +730,7 @@ dostat:
             i = -1;
             break;
         }
-        set_apout_root(buf);
-        i = 0;
+        i = set_apout_root(buf);
         break;
     case S_CHDIR:		/* DONE */
         buf = xlate_filename((char *) &dspace[uarg1]);
@@ -764,82 +888,67 @@ dostat:
         i = send(sarg1, buf, sarg3, sarg4);
         break;
     case S_ACCEPT:		/* DONE */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg2];
-        sock.sa_family = tr_sock->sa_family;
-        ll_word(uarg3, len);
-#ifndef __linux__
-        sock.sa_len = len;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        i = accept(sarg1, &sock, (socklen_t *) & len);
-        if (i != -1) {
-            sl_word(uarg3, len);
-            memcpy(tr_sock->sa_data, sock.sa_data, len);
-        }
-        break;
     case S_GETPEERNAME:	/* DONE */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg2];
-        sock.sa_family = tr_sock->sa_family;
-        ll_word(uarg3, len);
-#ifndef __linux__
-        sock.sa_len = len;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        i = getpeername(sarg1, &sock, (socklen_t *) & len);
-        if (i != -1) {
-            sl_word(uarg3, len);
-            memcpy(tr_sock->sa_data, sock.sa_data, len);
-        }
-        break;
     case S_GETSOCKNAME:	/* DONE */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg2];
-        sock.sa_family = tr_sock->sa_family;
-        ll_word(uarg3, len);
-#ifndef __linux__
-        sock.sa_len = len;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        i = getsockname(sarg1, &sock, (socklen_t *) & len);
+        if ((ir & 0xff) == S_ACCEPT && !uarg2) {
+            i = accept(sarg1, NULL, NULL);
+            break;
+        }
+        if (bsd_prepare_sockaddr(uarg2, uarg3, &sock_capacity) == -1) {
+            i = -1;
+            break;
+        }
+        memset(&sock, 0, sizeof(sock));
+        sock_length = sizeof(sock);
+        if ((ir & 0xff) == S_ACCEPT)
+            i = accept(sarg1, (struct sockaddr *) &sock, &sock_length);
+        else if ((ir & 0xff) == S_GETPEERNAME)
+            i = getpeername(sarg1, (struct sockaddr *) &sock, &sock_length);
+        else
+            i = getsockname(sarg1, (struct sockaddr *) &sock, &sock_length);
         if (i != -1) {
-            sl_word(uarg3, len);
-            memcpy(tr_sock->sa_data, sock.sa_data, len);
+            if (bsd_store_sockaddr(uarg2, uarg3, sock_capacity, &sock,
+                                   sock_length) == -1) {
+                if ((ir & 0xff) == S_ACCEPT) {
+                    j = errno;
+                    close(i);
+                    errno = j;
+                }
+                i = -1;
+            }
         }
         break;
     case S_BIND:		/* DONE */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg2];
-        sock.sa_family = tr_sock->sa_family;
-        len = sarg3;
-#ifndef __linux__
-        sock.sa_len = sarg3;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        i = bind(sarg1, &sock, len);
-        break;
     case S_CONNECT:	/* DONE */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg2];
-        sock.sa_family = tr_sock->sa_family;
-        len = sarg3;
-#ifndef __linux__
-        sock.sa_len = sarg3;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        i = connect(sarg1, &sock, len);
-        break;
-    case S_RECVFROM:	/* DONE I think */
-        tr_sock = (struct tr_sockaddr *) &dspace[uarg5];
-        sock.sa_family = tr_sock->sa_family;
-        ll_word(uarg6, len);
-#ifndef __linux__
-        sock.sa_len = len;
-#endif
-        memcpy(sock.sa_data, tr_sock->sa_data, len);
-        buf = (char *) &dspace[uarg2];
-        i = recvfrom(sarg1, buf, sarg3, sarg4, &sock,
-                     (socklen_t *) & len);
-        if (i != -1) {
-            sl_word(uarg6, len);
-            memcpy(tr_sock->sa_data, sock.sa_data, len);
+        if (bsd_load_sockaddr(uarg2, uarg3, &sock, &sock_length) == -1) {
+            i = -1;
+            break;
         }
+        if ((ir & 0xff) == S_BIND)
+            i = bind(sarg1, (struct sockaddr *) &sock, sock_length);
+        else
+            i = connect(sarg1, (struct sockaddr *) &sock, sock_length);
+        break;
+    case S_RECVFROM:	/* DONE */
+        if (sarg3 < 0) {
+            i = -1;
+            errno = EINVAL;
+            break;
+        }
+        if (!valid_dspace_range(uarg2, uarg3) ||
+            (uarg5 && bsd_prepare_sockaddr(uarg5, uarg6, &sock_capacity) == -1)) {
+            i = -1;
+            break;
+        }
+        memset(&sock, 0, sizeof(sock));
+        sock_length = sizeof(sock);
+        buf = (char *) &dspace[uarg2];
+        i = recvfrom(sarg1, buf, uarg3, sarg4,
+                     uarg5 ? (struct sockaddr *) &sock : NULL,
+                     uarg5 ? &sock_length : NULL);
+        if (i != -1 && uarg5 &&
+            bsd_store_sockaddr(uarg5, uarg6, sock_capacity, &sock, sock_length) == -1)
+            i = -1;
         break;
     case S_GETGROUPS:
         len = sarg1;
@@ -933,6 +1042,7 @@ dostat:
         exit(EXIT_FAILURE);
     }
 
+done:
     /* Set r0 to either errno or i, */
     /* and clear/set C bit */
 
@@ -955,7 +1065,12 @@ static int trap_execve(int want_env)
     u_int16_t cptr, cptr2;
     char *buf, *name, *origpath;
 
+    if (!valid_guest_pathname(uarg1) ||
+        !valid_guest_exec_args(uarg2, uarg3, want_env))
+        return -1;
     origpath = strdup((char *) &dspace[uarg1]);
+    if (origpath == NULL)
+        return -1;
     name = xlate_filename(origpath);
     TrapDebug((dbg_file, "%s Execing %s (%s) ", progname, name, origpath));
 
@@ -964,7 +1079,7 @@ static int trap_execve(int want_env)
     cptr = uarg2;
     Argc = 0;
     Envc = 0;
-    while (Argc < MAX_ARGS) {
+    while (cptr && Argc < MAX_ARGS - 1) {
         ll_word(cptr, cptr2);
         if (cptr2 == 0)
             break;
@@ -978,7 +1093,7 @@ static int trap_execve(int want_env)
 
     if (want_env) {
         cptr = uarg3;
-        while (Envc < MAX_ARGS) {
+        while (cptr && Envc < MAX_ARGS - 1) {
             ll_word(cptr, cptr2);
             if (cptr2 == 0)
                 break;
@@ -995,6 +1110,7 @@ static int trap_execve(int want_env)
         if (want_env)
             for (Envc--; Envc >= 0; Envc--)
                 free(Envp[Envc]);
+        free(origpath);
         errno = ENOENT;
         return (-1);
     }

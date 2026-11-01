@@ -233,6 +233,8 @@ int load_script(const char *file, const char *origpath, FILE * zin,
 
     file = xlate_filename(script_arg[0]);
     free(script_line);
+    if (file == NULL)
+        return -1;
     for (i = 0; i < Argc; i++)
         TrapDebug((dbg_file, "Leaving load_script Argv[%d] is %s\n", i,
                    Argv[i]));

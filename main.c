@@ -21,6 +21,7 @@ char *streammode[NFILE];	/* Mode for each file - used for dup */
 static char realfilename[2][2 * MAXPATHLEN];
 static char *rfn[2];
 static int whichrfn = 0;
+static size_t root_length;
 char *apout_root = NULL;	/* Root dir for simulated a.out */
 
 #ifdef DEBUG
@@ -117,7 +118,10 @@ int main(int argc, char **argv)
     /* Set the translation to a fictitious */
     /* root filesystem */
     if ((apout_root = getenv("APOUT_ROOT"))) {
-        set_apout_root(apout_root);
+        if (set_apout_root(apout_root) == -1) {
+            perror("Apout - invalid APOUT_ROOT");
+            exit(EXIT_FAILURE);
+        }
     } else {
 #ifdef APOUT_DONT_ASSUME_ROOT
         fprintf(stderr,
@@ -145,11 +149,30 @@ int main(int argc, char **argv)
  * have to free the returned pointer, but successive calls will destroy
  * calls from >2 calls earlier.
  */
+static int filename_fits(char *name)
+{
+    size_t available = sizeof(realfilename[0]) - root_length;
+    if (name == NULL) {
+        errno = EFAULT;
+        return 0;
+    }
+    if (name[0] == '/' && strnlen(name, available) == available) {
+        errno = ENAMETOOLONG;
+        return 0;
+    }
+    return 1;
+}
+
+int valid_guest_pathname(u_int16_t addr)
+{
+    return valid_guest_string(addr) && filename_fits((char *) &dspace[addr]);
+}
+
 char *xlate_filename(char *name)
 {
     int i = whichrfn;
 
-    if (name == NULL)
+    if (!filename_fits(name))
         return (NULL);
     if (name[0] == '\0')
         return (".");		/* Undocumented, but used in V7 */
@@ -160,12 +183,24 @@ char *xlate_filename(char *name)
     return (realfilename[i]);
 }
 
-void set_apout_root(char *dirname)
+int set_apout_root(char *dirname)
 {
-    strcpy(realfilename[0], dirname);
-    strcpy(realfilename[1], dirname);
+    size_t length;
+    if (dirname == NULL) {
+        errno = EINVAL;
+        return -1;
+    }
+    length = strnlen(dirname, sizeof(realfilename[0]));
+    if (length == sizeof(realfilename[0])) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    memmove(realfilename[0], dirname, length + 1);
+    memcpy(realfilename[1], realfilename[0], length + 1);
+    root_length = length;
     rfn[0] = realfilename[0];
     rfn[0] += strlen(realfilename[0]);
     rfn[1] = realfilename[1];
     rfn[1] += strlen(realfilename[1]);
+    return 0;
 }

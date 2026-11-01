@@ -89,6 +89,42 @@ static void io_tests(void)
     }
 }
 
+static void pathname_call(int edition, unsigned number, u_int16_t first,
+                          u_int16_t second)
+{
+    u_int16_t arguments[3] = {first, second, 0};
+    sim_init();
+    Binary = edition ? IS_V1 : IS_V7;
+    regs[PC] = 0200;
+    memcpy(&ispace[0200], arguments, sizeof(arguments));
+    memcpy(&dspace[0200], arguments, sizeof(arguments));
+    ir = 0104400 | number;
+    if (edition)
+        v1trap();
+    else
+        v7trap();
+}
+
+static void pathname_tests(void)
+{
+    int edition;
+    set_apout_root("/");
+    dspace[0] = 0;
+    memset(&dspace[65534], 'x', 2);
+    strcpy((char *) &dspace[04000], "apout-no-such-source");
+    for (edition = 0; edition < 2; edition++) {
+        pathname_call(edition, S_CHDIR, 0, 0);
+        check("V1/V7 CHDIR rejects NULL pathname", CC_C, 1);
+        check("V1/V7 NULL pathname errno", errno, EFAULT);
+        pathname_call(edition, S_CHDIR, 65534, 0);
+        check("V1/V7 CHDIR rejects unterminated pathname", CC_C, 1);
+        check("V1/V7 unterminated pathname errno", errno, EFAULT);
+        pathname_call(edition, S_LINK, 04000, 65534);
+        check("V1/V7 LINK validates second pathname", CC_C, 1);
+        check("V1/V7 second pathname errno", errno, EFAULT);
+    }
+}
+
 int main(int argc, char **argv)
 {
     int master, slave;
@@ -103,6 +139,8 @@ int main(int argc, char **argv)
     ispace = (u_int8_t *) imem;
     dspace = (u_int8_t *) dmem;
     dwrite_base = 0;
+    Binary = IS_V7;
+    pathname_tests();
     Binary = IS_V7;
     master = posix_openpt(O_RDWR | O_NOCTTY);
     if (master == -1 || grantpt(master) == -1 || unlockpt(master) == -1) {
