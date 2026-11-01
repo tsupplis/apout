@@ -6,3 +6,12 @@ do_build
 *.un~
 *.swp
 .DS_*
+*/*.dSYM
+tests/core
+tests/core-sanitize
+tests/syscalls
+tests/syscalls-sanitize
+tests/loader
+tests/loader-sanitize
+tests/bsd
+tests/bsd-sanitize

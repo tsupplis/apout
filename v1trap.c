@@ -206,6 +206,13 @@ void v1trap()
         regs[0] = i;
         break;
     case V1_READ:
+        if (sarg3 < 0 || !valid_dspace_range(uarg2, uarg3)) {
+            if (sarg3 < 0)
+                errno = EINVAL;
+            i = -1;
+            regs[0] = 0177777;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
 #ifdef STREAM_BUFFERING
         if (ValidFD(sarg1) && stream[sarg1])
@@ -223,6 +230,13 @@ void v1trap()
         regs[0] = i;
         break;
     case V1_WRITE:
+        if (sarg3 < 0 || !valid_dspace_range(uarg2, uarg3)) {
+            if (sarg3 < 0)
+                errno = EINVAL;
+            i = -1;
+            regs[0] = 0177777;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
 #ifdef STREAM_BUFFERING
         if (ValidFD(sarg1) && stream[sarg1])

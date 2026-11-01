@@ -207,7 +207,7 @@ void sbc()
 {
     load_dst();
 
-    if (dstword == MNI)
+    if (CC_C && dstword == MNI)
         SET_CC_V();
     else
         CLR_CC_V();
@@ -483,6 +483,11 @@ void sbcb()
 {
     loadb_dst();
 
+    if (CC_C && dstbyte == MNI_B)
+        SET_CC_V();
+    else
+        CLR_CC_V();
+
     if (CC_C) {			/* do if carry is set */
         if (dstbyte)
             CLR_CC_C();
@@ -493,11 +498,6 @@ void sbcb()
     } else {
         CLR_CC_C();
     }
-
-    if (dstbyte == MNI_B)
-        SET_CC_V();
-    else
-        CLR_CC_V();
 
     CHGB_CC_N(dstbyte);
     CHGB_CC_Z(dstbyte);

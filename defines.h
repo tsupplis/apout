@@ -98,10 +98,10 @@ typedef unsigned long u_int32_t;
  */
 
 #ifdef DEBUG
-#define TrapDebug(x) if (trap_debug) (void)fprintf x
-#define InstDebug(x) if (inst_debug) (void)fprintf x
-#define JsrDebug(x)  if (jsr_debug)  (void)fprintf x
-#define FpDebug(x)   if (fp_debug)   (void)fprintf x
+#define TrapDebug(x) if (trap_debug) ((void)fprintf x)
+#define InstDebug(x) if (inst_debug) ((void)fprintf x)
+#define JsrDebug(x)  if (jsr_debug)  ((void)fprintf x)
+#define FpDebug(x)   if (fp_debug)   ((void)fprintf x)
 #else
 #define TrapDebug(x)
 #define InstDebug(x)
@@ -338,6 +338,12 @@ extern struct our_siglist *Sigtail;	/* Tail of the list */
 
 extern u_int16_t *adptr;
 
+#define CHECK_WORD_ADDR(addr) \
+    do { \
+        if (((unsigned)(addr) & 1) || (unsigned)(addr) >= PDP_MEM_SIZE - 1) \
+            bus_error(SIGBUS); \
+    } while (0)
+
 #define copylong(to,from) \
 	buf = (char *) &(to); buf2 = (char *) &(from); \
 	buf[0]=buf2[2]; buf[1]=buf2[3]; buf[2]=buf2[0]; buf[3]=buf2[1]
@@ -345,20 +351,20 @@ extern u_int16_t *adptr;
 #ifndef EMUV1
 /* lli_word() - Load a word from the given ispace logical address. */
 #define lli_word(addr, word) \
-	{ adptr= (u_int16_t *)&(ispace[addr]); word= *adptr; }
+	{ CHECK_WORD_ADDR(addr); adptr= (u_int16_t *)&(ispace[addr]); word= *adptr; }
 
 /* ll_word() - Load a word from the given logical address. */
 #define ll_word(addr, word) \
-	{ adptr= (u_int16_t *)&(dspace[addr]); word= *adptr; }
+	{ CHECK_WORD_ADDR(addr); adptr= (u_int16_t *)&(dspace[addr]); word= *adptr; }
 
 /* sl_word() - Store a word at the given logical address. */
 #ifdef WRITEBASE
 #define sl_word(addr, word) \
-	{ if ((u_int16_t)addr < dwrite_base) seg_fault(); \
+	{ CHECK_WORD_ADDR(addr); if ((u_int16_t)addr < dwrite_base) seg_fault(); \
 	  adptr= (u_int16_t *)&(dspace[addr]); *adptr= word; }
 #else
 #define sl_word(addr, word) \
-	{ adptr= (u_int16_t *)&(dspace[addr]); *adptr= word; }
+	{ CHECK_WORD_ADDR(addr); adptr= (u_int16_t *)&(dspace[addr]); *adptr= word; }
 #endif
 
 /* lli_byte() - Load a byte from the given logical ispace address. */
@@ -387,14 +393,14 @@ extern u_int16_t *adptr;
 
 /* lli_word() - Load a word from the given ispace logical address. */
 #define lli_word(addr, word) \
-	{ if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
+	{ CHECK_WORD_ADDR(addr); if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
 		word= kell_word(addr);					\
 	  } else { adptr= (u_int16_t *)&(ispace[addr]); word= *adptr; }	\
 	}
 
 /* ll_word() - Load a word from the given logical address. */
 #define ll_word(addr, word) \
-	{ if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
+	{ CHECK_WORD_ADDR(addr); if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
 		word= kell_word(addr);					\
 	  } else { adptr= (u_int16_t *)&(dspace[addr]); word= *adptr; }	\
 	}
@@ -402,14 +408,14 @@ extern u_int16_t *adptr;
 /* sl_word() - Store a word at the given logical address. */
 #ifdef WRITEBASE
 #define sl_word(addr, word) \
-	{ if ((u_int16_t)addr < dwrite_base) seg_fault(); \
+	{ CHECK_WORD_ADDR(addr); if ((u_int16_t)addr < dwrite_base) seg_fault(); \
 	  if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
 		kesl_word(addr, word);					\
 	  } else { adptr= (u_int16_t *)&(dspace[addr]); *adptr= word; }	\
 	}
 #else
 #define sl_word(addr, word) \
-	{ if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
+	{ CHECK_WORD_ADDR(addr); if ((Binary<IS_V3) && (addr>=KE11LO) && (addr<=KE11HI)) {	\
 		kesl_word(addr, word);					\
 	  } else { adptr= (u_int16_t *)&(dspace[addr]); *adptr= word; }	\
 	}
@@ -508,6 +514,7 @@ void bisb P((void));
 void run P((void));
 void sim_init P((void));
 void bus_error P((int));
+int valid_dspace_range P((u_int16_t addr, size_t length));
 void seg_fault P((void));
 void waiti P((void));
 void halt P((void));

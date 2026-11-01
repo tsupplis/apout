@@ -206,14 +206,10 @@ void mfps()
 void mtps()
 {
     loadb_dst();
-    if (dstbyte & CC_NBIT)
-        CC_N = 1;
-    if (dstbyte & CC_ZBIT)
-        CC_Z = 1;
-    if (dstbyte & CC_VBIT)
-        CC_V = 1;
-    if (dstbyte & CC_CBIT)
-        CC_C = 1;
+    CC_N = !!(dstbyte & CC_NBIT);
+    CC_Z = !!(dstbyte & CC_ZBIT);
+    CC_V = !!(dstbyte & CC_VBIT);
+    CC_C = !!(dstbyte & CC_CBIT);
 }
 
 /* mfpi() - Move From Previous Instruction Space Instruction. */
@@ -221,6 +217,9 @@ void mfpi()
 {
     loadp_dst();
     push();
+    CHG_CC_N(srcword);
+    CHG_CC_Z(srcword);
+    CLR_CC_V();
 }
 
 
@@ -229,19 +228,21 @@ void mtpi()
 {
     pop();
     storep_dst();
+    CHG_CC_N(dstword);
+    CHG_CC_Z(dstword);
+    CLR_CC_V();
 }
 
 /* ash() - Arithmetic Shift Instruction. */
 void ash()
 {
     u_int16_t temp;
-    u_int16_t old;
     u_int16_t sign;
     u_int16_t count;
 
     temp = regs[SRC_REG];
     load_dst();
-    old = temp;
+    CLR_CC_V();
 
     if ((dstword & 077) == 0) {	/* no shift */
         CHG_CC_N(temp);
@@ -269,18 +270,16 @@ void ash()
             } else {
                 CLR_CC_C();
             }
+            sign = temp & SIGN;
             temp <<= 1;
+            if (sign != (temp & SIGN))
+                SET_CC_V();
         }
     }
 
     CHG_CC_N(temp);
     CHG_CC_Z(temp);
 
-    if ((old & SIGN) == (temp & SIGN)) {
-        CLR_CC_V();
-    } else {
-        SET_CC_V();
-    }
     regs[SRC_REG] = temp;
 }
 
@@ -314,6 +313,8 @@ void mul()
     regs[(SRC_REG) | 1] = (u_int16_t) (tmp.u_long & 0177777);
 
     CLR_CC_ALL();
+    if ((tmp.s_long > 32767) || (tmp.s_long < -32768))
+        SET_CC_C();
 
     if (tmp.u_long == 0)
         SET_CC_Z();
@@ -329,7 +330,7 @@ void mul()
 void divide()
 {
     union s_u_long tmp;
-    union s_u_long eql;
+    int64_t quotient;
     union s_u_word data2;
 
     tmp.u_long = regs[SRC_REG];
@@ -347,41 +348,39 @@ void divide()
         CLR_CC_C();
     }
 
-    eql.s_long = tmp.s_long / data2.s_word;
-    regs[SRC_REG] = (u_int16_t) eql.u_long & 0177777;
+    quotient = (int64_t) tmp.s_long / data2.s_word;
+    if ((quotient > 32767) || (quotient < -32768)) {
+        SET_CC_V();
+        return;
+    }
+    CLR_CC_V();
+    regs[SRC_REG] = (u_int16_t) quotient;
 
-    if (eql.u_long == 0)
+    if (quotient == 0)
         SET_CC_Z();
     else
         CLR_CC_Z();
 
-    if ((eql.s_long > 077777) || (eql.s_long < -0100000))
-        SET_CC_V();
-    else
-        CLR_CC_V();
-
-    if (eql.s_long < 0)
+    if (quotient < 0)
         SET_CC_N();
     else
         CLR_CC_N();
 
-    eql.s_long = tmp.s_long % data2.s_word;
-    regs[(SRC_REG) | 1] = (u_int16_t) eql.u_long & 0177777;
+    regs[(SRC_REG) | 1] = (u_int16_t) (tmp.s_long % data2.s_word);
 }
 
 /* ashc() - Arithmetic Shift Combined Instruction. */
 void ashc()
 {
     u_int32_t temp;
-    u_int32_t old;
     u_int32_t sign;
     u_int16_t count;
 
     temp = regs[SRC_REG];
     temp <<= 16;
     temp += regs[(SRC_REG) | 1];
-    old = temp;
     load_dst();
+    CLR_CC_V();
 
     if ((dstword & 077) == 0) {	/* no shift */
 
@@ -420,7 +419,10 @@ void ashc()
             } else {
                 CLR_CC_C();
             }
+            sign = temp & 0x80000000;
             temp <<= 1;
+            if (sign != (temp & 0x80000000))
+                SET_CC_V();
         }
     }
 
@@ -433,12 +435,6 @@ void ashc()
         CLR_CC_Z();
     else
         SET_CC_Z();
-
-    if ((old & 0x80000000) == (temp & 0x80000000)) {
-        CLR_CC_V();
-    } else {
-        SET_CC_V();
-    }
 
     regs[SRC_REG] = (u_int16_t) (temp >> 16);
     regs[(SRC_REG) | 1] = LOW16(temp);

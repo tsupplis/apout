@@ -67,9 +67,12 @@ void v7trap()
     int whence;
     u_int16_t argbase;
     int trapnum;
+    int indirect;
     long larg;
     char *buf, *buf2;
+#ifdef STREAM_BUFFERING
     char *fmode;		/* used with fdopen only */
+#endif
     time_t tim;
 
     struct stat stbuf;		/* used in STAT */
@@ -86,7 +89,8 @@ void v7trap()
     /* shift the PC up past any arguments */
     /* to the syscall. Calculate base of args */
     trapnum = ir & 077;
-    if (trapnum == S_INDIR) {
+    indirect = trapnum == S_INDIR;
+    if (indirect) {
         lli_word(regs[PC], argbase);
         ll_word(argbase, ir);
         trapnum = ir & 077;
@@ -106,8 +110,13 @@ void v7trap()
     /* Move arguments into V7A so we can use them */
     for (i = 0; i < v7arg[trapnum].nregs; i++)
         V7A.uarg[i] = regs[i];
-    for (; i < v7arg[trapnum].nwords; i++, argbase += 2)
-        ll_word(argbase, V7A.uarg[i]);
+    for (; i < v7arg[trapnum].nwords; i++, argbase += 2) {
+        if (indirect) {
+            ll_word(argbase, V7A.uarg[i]);
+        } else {
+            lli_word(argbase, V7A.uarg[i]);
+        }
+    }
 
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
                v7trap_name[trapnum]));
@@ -239,6 +248,10 @@ void v7trap()
         i = i >> 16;
         break;
     case S_READ:
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
 #ifdef STREAM_BUFFERING
         if (ValidFD(sarg1) && stream[sarg1])
@@ -261,6 +274,10 @@ void v7trap()
         i = access(buf, sarg2);
         break;
     case S_WRITE:
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
 #ifdef STREAM_BUFFERING
         if (ValidFD(sarg1) && stream[sarg1])
@@ -439,21 +456,29 @@ dostat:
         i = stat(buf, &stbuf);	/* If file is a directory */
         if (i == 0 && (stbuf.st_mode & S_IFDIR)) {
             i = open_dir(buf);
+#ifdef STREAM_BUFFERING
             fmode = "w+";
+#endif
             TrapDebug((dbg_file, "(dir) on %s return %d ", buf, i));
         } else {
             switch (sarg2) {
             case 0:
                 sarg2 = O_RDONLY;
+#ifdef STREAM_BUFFERING
                 fmode = "r";
+#endif
                 break;
             case 1:
                 sarg2 = O_WRONLY;
+#ifdef STREAM_BUFFERING
                 fmode = "w";
+#endif
                 break;
             default:
                 sarg2 = O_RDWR;
+#ifdef STREAM_BUFFERING
                 fmode = "w+";
+#endif
                 break;
             }
             i = open(buf, sarg2);
@@ -717,19 +742,36 @@ static int open_dir(char *name)
     return (i);
 }
 
+static const speed_t v7speeds[] = {
+    B0, B50, B75, B110, B134, B150, B200, B300,
+    B600, B1200, B1800, B2400, B4800, B9600, B19200, B38400
+};
+
 static int trap_gtty(u_int16_t fd, u_int16_t ucnt)
 {
-    struct tr_sgttyb *sgtb;	/* used in GTTY/STTY */
+    struct tr_sgttyb sg;
+    struct tr_sgttyb *sgtb = &sg;
     struct termios tios;	/* used in GTTY/STTY */
     int i;
 
+    if (ucnt == 0 || ucnt > PDP_MEM_SIZE - sizeof(sg)) {
+        errno = EFAULT;
+        return -1;
+    }
     i = tcgetattr(fd, &tios);
     if (i == -1)
         return i;
-    CLR_CC_C();
-    sgtb = (struct tr_sgttyb *) &dspace[ucnt];
-    sgtb->sg_ispeed = cfgetispeed(&tios);	/* tios.c_ispeed; --gray */
-    sgtb->sg_ospeed = cfgetospeed(&tios);	/* tios.c_ospeed; --gray */
+    sgtb->sg_ispeed = sgtb->sg_ospeed = -1;
+    for (i = 0; i < 16; i++) {
+        if (v7speeds[i] == cfgetispeed(&tios))
+            sgtb->sg_ispeed = i;
+        if (v7speeds[i] == cfgetospeed(&tios))
+            sgtb->sg_ospeed = i;
+    }
+    if (sgtb->sg_ispeed == -1 || sgtb->sg_ospeed == -1) {
+        errno = EINVAL;
+        return -1;
+    }
     sgtb->sg_erase = tios.c_cc[VERASE];
     sgtb->sg_kill = tios.c_cc[VKILL];
     sgtb->sg_flags = 0;
@@ -747,64 +789,81 @@ static int trap_gtty(u_int16_t fd, u_int16_t ucnt)
     if (tios.c_lflag & ECHO)
         sgtb->sg_flags |= TR_ECHO;
     if (!(tios.c_lflag & ICANON)) {
-        if (!(tios.c_lflag & ECHO))
+        if (tios.c_lflag & ISIG)
             sgtb->sg_flags |= TR_CBREAK;
         else
             sgtb->sg_flags |= TR_RAW;
     }
+    memcpy(&dspace[ucnt], sgtb, sizeof(sg));
     return 0;
 }
 
 static int trap_stty(u_int16_t fd, u_int16_t ucnt)
 {
-    struct tr_sgttyb *sgtb;	/* used in GTTY/STTY */
+    struct tr_sgttyb sg;
+    struct tr_sgttyb *sgtb = &sg;
     struct termios tios;	/* used in GTTY/STTY */
-    int i;
+    int parity;
 
-    if (ucnt != 0) {
-        sgtb = (struct tr_sgttyb *) &dspace[ucnt];
-        cfsetispeed(&tios, sgtb->sg_ispeed);
-        cfsetospeed(&tios, sgtb->sg_ospeed);
-        tios.c_cc[VERASE] = sgtb->sg_erase;
-        tios.c_cc[VKILL] = sgtb->sg_kill;
-        if (sgtb->sg_flags & TR_XTABS)
-            tios.c_oflag |= OXTABS;
-        if (sgtb->sg_flags & TR_ODDP) {
-            tios.c_cflag |= PARENB;
-            tios.c_cflag &= ~PARODD;
-        }
-        if (sgtb->sg_flags & TR_EVENP)
-            tios.c_cflag |= PARENB | PARODD;
-        if (sgtb->sg_flags & TR_ANYP)
-            tios.c_cflag &= ~PARENB;
-        if (sgtb->sg_flags & TR_CRMOD)
-            tios.c_oflag |= ONLCR;
-        if (sgtb->sg_flags & TR_ECHO)
-            tios.c_lflag |= ECHO;
-        if (sgtb->sg_flags & TR_RAW) {
-            tios.c_lflag &= (~ICANON) & (~ECHO);
-            for (i = 0; i < NCCS; i++)
-                tios.c_cc[i] = 0;
-            tios.c_cc[VMIN] = 1;
-        }
-        if (sgtb->sg_flags & TR_CBREAK) {
-            tios.c_lflag &= (~ICANON);
-            tios.c_lflag |= ECHO;
-            for (i = 0; i < NCCS; i++)
-                tios.c_cc[i] = 0;
-            tios.c_cc[VMIN] = 1;
-        }
-        i = tcsetattr(fd, TCSANOW, &tios);
-        return (i);
+    if (ucnt == 0 || ucnt > PDP_MEM_SIZE - sizeof(sg)) {
+        errno = EFAULT;
+        return -1;
+    }
+    memcpy(sgtb, &dspace[ucnt], sizeof(sg));
+    if (sgtb->sg_ispeed < 0 || sgtb->sg_ispeed >= 16 ||
+            sgtb->sg_ospeed < 0 || sgtb->sg_ospeed >= 16) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (tcgetattr(fd, &tios) == -1)
+        return -1;
+    if (sgtb->sg_flags & TR_RAW)
+        cfmakeraw(&tios);
+    else {
+        tios.c_lflag |= ISIG;
+        if (sgtb->sg_flags & TR_CBREAK)
+            tios.c_lflag &= ~ICANON;
+        else
+            tios.c_lflag |= ICANON;
+    }
+    if (cfsetispeed(&tios, v7speeds[sgtb->sg_ispeed]) == -1 ||
+            cfsetospeed(&tios, v7speeds[sgtb->sg_ospeed]) == -1)
+        return -1;
+    tios.c_cc[VERASE] = sgtb->sg_erase;
+    tios.c_cc[VKILL] = sgtb->sg_kill;
+    tios.c_oflag &= ~(OXTABS | ONLCR);
+    tios.c_iflag &= ~ICRNL;
+    if (sgtb->sg_flags & TR_XTABS)
+        tios.c_oflag |= OXTABS;
+    parity = sgtb->sg_flags & TR_ANYP;
+    if (parity == TR_ODDP)
+        tios.c_cflag |= PARENB | PARODD;
+    else if (parity == TR_EVENP) {
+        tios.c_cflag |= PARENB;
+        tios.c_cflag &= ~PARODD;
     } else
-        return (-1);
+        tios.c_cflag &= ~PARENB;
+    if (sgtb->sg_flags & TR_CRMOD) {
+        tios.c_oflag |= ONLCR;
+        tios.c_iflag |= ICRNL;
+    }
+    tios.c_lflag &= ~ECHO;
+    if (sgtb->sg_flags & TR_ECHO)
+        tios.c_lflag |= ECHO;
+    if (sgtb->sg_flags & (TR_RAW | TR_CBREAK)) {
+        tios.c_cc[VMIN] = 1;
+        tios.c_cc[VTIME] = 0;
+    }
+    return tcsetattr(fd, TCSANOW, &tios);
 }
 
 
 /* Where possible, deal with signals */
 static int v7signal(int sig, int val)
 {
-    if (sig > V7_NSIG) {
+    void (*previous)(int);
+
+    if (sig < 1 || sig > V7_NSIG) {
         errno = EINVAL;
         return (-1);
     }
@@ -813,12 +872,17 @@ static int v7signal(int sig, int val)
 
     switch (val) {
     case V7_SIG_IGN:
-        return ((int) signal(v7sig[sig], SIG_IGN));
+        previous = signal(v7sig[sig], SIG_IGN);
+        break;
     case V7_SIG_DFL:
-        return ((int) signal(v7sig[sig], SIG_DFL));
+        previous = signal(v7sig[sig], SIG_DFL);
+        break;
     default:
         return (0);		/* No handling of this as yet */
     }
+    if (previous == SIG_ERR)
+        return -1;
+    return previous == SIG_IGN ? V7_SIG_IGN : V7_SIG_DFL;
 }
 
 /* Workaround for bug in V5/V6 ctime() */

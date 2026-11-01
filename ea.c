@@ -24,7 +24,11 @@ void load_ea(void)
     case 3:
         indirect = regs[DST_REG];	/* this is wrong for 11/34 */
         regs[DST_REG] += 2;
-        lli_word(indirect, dstword);
+        if (DST_REG == PC) {
+            lli_word(indirect, dstword);
+        } else {
+            ll_word(indirect, dstword);
+        }
         return;
     case 4:
         regs[DST_REG] -= 2;
@@ -33,7 +37,7 @@ void load_ea(void)
     case 5:
         regs[DST_REG] -= 2;
         indirect = regs[DST_REG];
-        lli_word(indirect, dstword);
+        ll_word(indirect, dstword);
         return;
     case 6:
         lli_word(regs[PC], indirect);
@@ -234,7 +238,11 @@ void storeb_dst(void)
         return;
     case 3:
         indirect = regs[DST_REG];
-        ll_word(indirect, addr);
+        if (DST_REG == PC) {
+            lli_word(indirect, addr);
+        } else {
+            ll_word(indirect, addr);
+        }
         sl_byte(addr, srcbyte);
         regs[DST_REG] += 2;
         return;
@@ -461,7 +469,11 @@ void store_dst(void)
         return;
     case 3:
         indirect = regs[DST_REG];
-        ll_word(indirect, addr);
+        if (DST_REG == PC) {
+            lli_word(indirect, addr);
+        } else {
+            ll_word(indirect, addr);
+        }
         regs[DST_REG] += 2;	/* is this right ? */
         sl_word(addr, dstword);
         return;

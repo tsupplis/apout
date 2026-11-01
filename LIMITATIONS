@@ -9,25 +9,19 @@ turn off Apout stream buffering (a performance penalty), or patch
 ar.s to behave itself. The patch is:
 
 *** ar.s.orig   Thu Jan 14 09:40:46 1999
---- ar.s		Thu Jan 14 09:41:12 1999
+--- ar.s        Thu Jan 14 09:41:12 1999
 ***************
 *** 444,449 ****
 --- 444,451 ----
-		bes	 crterr
-		mov	 r0,afo
-		sys	 write; magic; 2
-+	   mov	 tfo,r0		  / need to close before reading
-+	   sys	 close
-	1:
-		mov	 tfi,r0
-		sys	 read; buf; 512.
+        bes     crterr
+        mov     r0,afo
+        sys     write; magic; 2
++       mov     tfo,r0          / need to close before reading
++       sys     close
+  1:
+        mov     tfi,r0
+        sys     read; buf; 512.
 
-
-Floating-point Limitations
---------------------------
-
-PDP-11 doubles are treated as floats. FEA/FEC don't exist.
-FP errors are not dealt with. Mistrust FP results for now.
 
 Limitations for 7th Edition Emulation in Apout 2.3
 --------------------------------------------------
@@ -47,9 +41,9 @@ calls are ignored: lock(2), stime(2).
 
 The following systems calls are only partially implemented:
 
-	signal(2):		Only SIG_DFL and SIG_IGN are implemented.
-	stty(2), gtty(2):	These should work, but V7 stty(1) doesn't work.
-	ioctl(2):		Only enough to emulate stty(2) amd gtty(2).
+    signal(2):		Only SIG_DFL and SIG_IGN are implemented.
+    stty(2), gtty(2):	These should work, but V7 stty(1) doesn't work.
+    ioctl(2):		Only enough to emulate stty(2) amd gtty(2).
 
 The emulated applications use the native filesystem. Native filenames bigger
 than 14 characters are truncated to 14 characters before being passed to
@@ -79,14 +73,20 @@ ints and passed to the native syscall. The errno values on the native
 system are not translated back to the 2.11 errno values. To find out
 what syscalls have been implemented, grep for the word DONE in bsdtrap.c.
 
+The time, interval-timer and resource-usage calls translate 32-bit guest
+values rather than copying host-sized fields. socketpair returns both guest
+file descriptors. Covered I/O and time/resource buffers are bounds-checked;
+this is not comprehensive validation of filenames or socket addresses.
+Signal-handler delivery is still disabled: sigaction, sigprocmask,
+sigreturn and sigaltstack currently return success without implementing
+the requested behavior.
+
 The following 2.11 syscalls are not handled:
 
 	S_GETSOCKOPT, S_SETSOCKOPT, S_SELECT,
 	S_RECVMSG, S_SENDMSG, S_SENDTO, 
 	S_SIGBLOCK, S_SIGPAUSE, S_SIGRETURN,
 	S_SIGSETMASK, S_SIGSTACK, S_SIGVEC
-
-S_OPEN does not work with directories
 
 Limitations for 1st Edition Emulation in Apout 2.3
 --------------------------------------------------
@@ -104,26 +104,26 @@ The list of 0405-magic files on the s2 archive is:
 	bin/ar  	bin/od
 	bin/bas 	bin/pr
 	bin/cat 	bin/rew
-	bin/chball	  bin/rmdir
-	bin/check	   bin/roff
-	bin/chown	   bin/sh
+	bin/chball      bin/rmdir
+	bin/check       bin/roff
+	bin/chown       bin/sh
 	bin/cmp 	bin/skip
 	bin/cp  	bin/sort
-	bin/date		bin/stat
+	bin/date        bin/stat
 	bin/db  	bin/stty
 	bin/dc  	bin/su
 	bin/df  	bin/sum
 	bin/du  	bin/tap
-	bin/echo		bin/tm
+	bin/echo        bin/tm
 	bin/ed  	bin/tty
-	bin/exit		bin/wc
-	bin/form		bin/who
-	bin/goto		bin/write
+	bin/exit        bin/wc
+	bin/form        bin/who
+	bin/goto        bin/write
 	bin/if  	etc/getty
-	bin/login	   etc/glob
+	bin/login       etc/glob
 	bin/ls 		etc/init
-	bin/mail		etc/msh
-	bin/mesg		/tc/suftab
+	bin/mail        etc/msh
+	bin/mesg        /tc/suftab
 	bin/mkdir
 
 The following 1st Edition system calls are not yet emulated: GTTY, STTY, TELL.
@@ -143,15 +143,15 @@ archive to compile the last1120c C compiler on Dennis Ritchie's homepage.
 The list of 0407-magic files in the s2 archive is below. I have starred
 those binaries that I know work with Apout.
 
- *  bin/as			usr/fort/fc1
- *  bin/cc			usr/fort/fc2
-	bin/ds			usr/fort/fc3
-	bin/fc			usr/fort/fc4
-	bin/find			usr/jack/a.out
- *  bin/ld			usr/jack/x.o
-	bin/maki		 *  usr/lib/c0
-	bin/nm		 *  usr/lib/c1
- *  bin/size			usr/lib/crt0.o
-	bin/strip			usr/lib/fr0.o
-	bin/un			usr/sys/a.out
+ *  bin/as		    usr/fort/fc1
+ *  bin/cc		    usr/fort/fc2
+    bin/ds		    usr/fort/fc3
+    bin/fc		    usr/fort/fc4
+    bin/find		    usr/jack/a.out
+ *  bin/ld		    usr/jack/x.o
+    bin/maki		 *  usr/lib/c0
+    bin/nm		 *  usr/lib/c1
+ *  bin/size		    usr/lib/crt0.o
+    bin/strip		    usr/lib/fr0.o
+    bin/un		    usr/sys/a.out
  *  etc/as2

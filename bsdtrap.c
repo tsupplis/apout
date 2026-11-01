@@ -50,6 +50,31 @@ static int16_t map_fcntl P((int16_t f));
 #endif
 #undef P
 
+static int32_t bsd_load_long(unsigned addr)
+{
+    u_int16_t words[2];
+    memcpy(words, &dspace[addr], sizeof(words));
+    return (int32_t) (((u_int32_t) words[0] << 16) | words[1]);
+}
+
+static void bsd_store_long(unsigned addr, int32_t value)
+{
+    u_int16_t words[2] = {(u_int32_t) value >> 16, (u_int16_t) value};
+    memcpy(&dspace[addr], words, sizeof(words));
+}
+
+static void bsd_load_timeval(unsigned addr, struct timeval *value)
+{
+    value->tv_sec = bsd_load_long(addr);
+    value->tv_usec = bsd_load_long(addr + 4);
+}
+
+static void bsd_store_timeval(unsigned addr, const struct timeval *value)
+{
+    bsd_store_long(addr, value->tv_sec);
+    bsd_store_long(addr + 4, value->tv_usec);
+}
+
 void bsdtrap()
 {
     int i, j, len, pid, pfd[2];
@@ -59,22 +84,22 @@ void bsdtrap()
     char *fmode;		/* used with fdopen only */
     struct stat stbuf;		/* used in STAT */
     struct tr_stat *tr_stbuf;	/* used in STAT */
-    struct tr_timeval *tr_del, *tr_oldel;	/* used in ADJTIME */
     struct timeval del, oldel;	/* used in ADJTIME */
     struct timeval utv[2];	/* used in UTIMES */
-    struct tr_timezone *tr_zone;	/* used in GETTIMEOFDAY */
+    struct tr_timezone guest_zone;
     struct timezone zone;	/* used in GETTIMEOFDAY */
-    struct tr_itimerval *tr_tval, *tr_oltval;	/* used in itimer calls */
     struct itimerval tval, oltval;	/* used in itimer calls */
     struct tr_sockaddr *tr_sock;	/* used in socket calls */
     struct sockaddr sock;	/* used in socket calls */
     gid_t *gidset;		/* used in GETGROUPS */
     struct tr_rlimit *tr_rlp;	/* used in rlimit calls */
     struct rlimit rlp;		/* used in rlimit calls */
-    struct tr_rusage *tr_use;	/* used in getrusage */
+    struct tr_rusage guest_use, *tr_use = &guest_use;
     struct rusage use;		/* used in getrusage */
-    struct iovec *ivec;		/* used in writev, readv */
-    struct tr_iovec *trivec;	/* used in writev, readv */
+    struct iovec ivec[16];	/* 2.11BSD's kernel vector limit. */
+    struct tr_iovec vector;
+    u_int16_t guest_fds[2];
+    size_t total;
 
     TrapDebug((dbg_file, "pid %d %s: ", (int) getpid(),
                bsdtrap_name[ir & 0xff]));
@@ -211,6 +236,10 @@ void bsdtrap()
         }
     case S_READ:		/* DONE */
         TrapDebug((dbg_file, "%d bytes on %d ", uarg3, sarg1));
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
 #ifdef STREAM_BUFFERING
         if (ValidFD(sarg1) && stream[sarg1])
@@ -235,6 +264,15 @@ void bsdtrap()
         i = rename(buf, buf2);
         break;
     case S_READLINK:	/* DONE */
+        if (sarg3 < 0) {
+            errno = EINVAL;
+            i = -1;
+            break;
+        }
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = xlate_filename((char *) &dspace[uarg1]);
         i = readlink(buf, (char *) &dspace[uarg2], sarg3);
         break;
@@ -256,25 +294,53 @@ void bsdtrap()
         break;
     case S_WRITEV:		/* DONE */
     case S_READV:		/* DONE */
-        ivec = (struct iovec *) malloc(uarg3 * sizeof(struct iovec));
-        if (ivec == NULL) {
+        if (uarg3 > 16) {
             i = -1;
             errno = EINVAL;
             break;
         }
-        trivec = (struct tr_iovec *) &dspace[uarg2];
-
-        for (j = 0; j < uarg3; j++) {
-            ivec[j].iov_len = trivec[j].iov_len;
-            ivec[j].iov_base = (char *) &dspace[trivec[j].iov_base];
+        if (uarg3 == 0) {
+            i = fcntl(sarg1, F_GETFL);
+            if (i == -1)
+                break;
+            if (((ir & 0xff) == S_READV && (i & O_ACCMODE) == O_WRONLY) ||
+                    ((ir & 0xff) == S_WRITEV && (i & O_ACCMODE) == O_RDONLY)) {
+                errno = EBADF;
+                i = -1;
+            } else
+                i = 0;
+            break;
         }
-        if ((ir & 0xff) == S_READV)
+        if (!valid_dspace_range(uarg2, uarg3 * sizeof(vector))) {
+            i = -1;
+            break;
+        }
+
+        total = 0;
+        for (j = 0; j < uarg3; j++) {
+            memcpy(&vector, &dspace[uarg2 + j * sizeof(vector)], sizeof(vector));
+            if (!valid_dspace_range(vector.iov_base, vector.iov_len))
+                break;
+            total += vector.iov_len;
+            if (total > 65535) {
+                errno = EINVAL;
+                break;
+            }
+            ivec[j].iov_len = vector.iov_len;
+            ivec[j].iov_base = &dspace[vector.iov_base];
+        }
+        if (j != uarg3)
+            i = -1;
+        else if ((ir & 0xff) == S_READV)
             i = readv(sarg1, ivec, uarg3);
         else
             i = writev(sarg1, ivec, uarg3);
-        free(ivec);
         break;
     case S_WRITE:		/* DONE */
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
         TrapDebug((dbg_file, "%d bytes on %d ", uarg3, sarg1));
 #ifdef STREAM_BUFFERING
@@ -356,74 +422,87 @@ dostat:
         }
         break;
     case S_UTIMES:		/* DONE */
-        buf = xlate_filename((char *) &dspace[uarg1]);
-        tr_del = (struct tr_timeval *) &dspace[uarg2];
-        tr_oldel = (struct tr_timeval *) &dspace[uarg4];
-        i = utimes(buf, utv);
-        if (i == -1)
+        if (uarg2 && !valid_dspace_range(uarg2, 16)) {
+            i = -1;
             break;
-        copylong(tr_del->tv_sec, utv[0].tv_sec);
-        copylong(tr_del->tv_usec, utv[0].tv_usec);
-        copylong(tr_oldel->tv_sec, utv[1].tv_sec);
-        copylong(tr_oldel->tv_usec, utv[1].tv_usec);
+        }
+        buf = xlate_filename((char *) &dspace[uarg1]);
+        if (uarg2) {
+            bsd_load_timeval(uarg2, &utv[0]);
+            bsd_load_timeval(uarg2 + 8, &utv[1]);
+        }
+        i = utimes(buf, uarg2 ? utv : NULL);
         break;
     case S_ADJTIME:	/* DONE */
-        tr_del = (struct tr_timeval *) &dspace[uarg1];
-        /* Convert tr_del to del */
-        copylong(del.tv_sec, tr_del->tv_sec);
-        copylong(del.tv_usec, tr_del->tv_usec);
+        if (!valid_dspace_range(uarg1, 8) ||
+                (uarg2 && !valid_dspace_range(uarg2, 8))) {
+            i = -1;
+            break;
+        }
+        bsd_load_timeval(uarg1, &del);
         i = adjtime(&del, &oldel);
 
-        if (uarg2) {
-            tr_oldel = (struct tr_timeval *) &dspace[uarg2];
-            copylong(tr_oldel->tv_sec, oldel.tv_sec);
-            copylong(tr_oldel->tv_usec, oldel.tv_usec);
-        }
+        if (i != -1 && uarg2)
+            bsd_store_timeval(uarg2, &oldel);
         break;
     case S_GETTIMEOFDAY:	/* DONE */
-        tr_del = (struct tr_timeval *) &dspace[uarg1];
-        tr_zone = (struct tr_timezone *) &dspace[uarg2];
-        i = gettimeofday(&del, &zone);
-        copylong(tr_del->tv_sec, del.tv_sec);
-        copylong(tr_del->tv_usec, del.tv_usec);
-        tr_zone->tz_minuteswest = zone.tz_minuteswest;
-        tr_zone->tz_dsttime = zone.tz_dsttime;
+        if ((uarg1 && !valid_dspace_range(uarg1, 8)) ||
+                (uarg2 && !valid_dspace_range(uarg2, sizeof(guest_zone)))) {
+            i = -1;
+            break;
+        }
+        i = gettimeofday(&del, uarg2 ? &zone : NULL);
+        if (i == -1)
+            break;
+        if (uarg1)
+            bsd_store_timeval(uarg1, &del);
+        if (uarg2) {
+            guest_zone.tz_minuteswest = zone.tz_minuteswest;
+            guest_zone.tz_dsttime = zone.tz_dsttime;
+            memcpy(&dspace[uarg2], &guest_zone, sizeof(guest_zone));
+        }
         break;
     case S_SETTIMEOFDAY:	/* DONE */
-        tr_del = (struct tr_timeval *) &dspace[uarg1];
-        tr_zone = (struct tr_timezone *) &dspace[uarg2];
-        copylong(del.tv_sec, tr_del->tv_sec);
-        copylong(del.tv_usec, tr_del->tv_usec);
-        zone.tz_minuteswest = tr_zone->tz_minuteswest;
-        zone.tz_dsttime = tr_zone->tz_dsttime;
-        i = settimeofday(&del, &zone);
+        if ((uarg1 && !valid_dspace_range(uarg1, 8)) ||
+                (uarg2 && !valid_dspace_range(uarg2, sizeof(guest_zone)))) {
+            i = -1;
+            break;
+        }
+        if (uarg1)
+            bsd_load_timeval(uarg1, &del);
+        if (uarg2) {
+            memcpy(&guest_zone, &dspace[uarg2], sizeof(guest_zone));
+            zone.tz_minuteswest = guest_zone.tz_minuteswest;
+            zone.tz_dsttime = guest_zone.tz_dsttime;
+        }
+        i = settimeofday(uarg1 ? &del : NULL, uarg2 ? &zone : NULL);
         break;
     case S_GETITIMER:	/* DONE */
-        tr_tval = (struct tr_itimerval *) &dspace[uarg2];
+        if (!valid_dspace_range(uarg2, 16)) {
+            i = -1;
+            break;
+        }
         i = getitimer(sarg1, &tval);
-        copylong(tr_tval->it_interval.tv_sec, tval.it_interval.tv_sec);
-        copylong(tr_tval->it_interval.tv_usec,
-                 tval.it_interval.tv_usec);
-        copylong(tr_tval->it_value.tv_sec, tval.it_value.tv_sec);
-        copylong(tr_tval->it_value.tv_usec, tval.it_value.tv_usec);
+        if (i == -1)
+            break;
+        bsd_store_timeval(uarg2, &tval.it_interval);
+        bsd_store_timeval(uarg2 + 8, &tval.it_value);
         break;
     case S_SETITIMER:	/* DONE */
-        tr_tval = (struct tr_itimerval *) &dspace[uarg2];
-        tr_oltval = (struct tr_itimerval *) &dspace[uarg2];
-        copylong(tval.it_interval.tv_sec, tr_tval->it_interval.tv_sec);
-        copylong(tval.it_interval.tv_usec,
-                 tr_tval->it_interval.tv_usec);
-        copylong(tval.it_value.tv_sec, tr_tval->it_value.tv_sec);
-        copylong(tval.it_value.tv_usec, tr_tval->it_value.tv_usec);
+        if (!valid_dspace_range(uarg2, 16) ||
+                (uarg3 && !valid_dspace_range(uarg3, 16))) {
+            i = -1;
+            break;
+        }
+        bsd_load_timeval(uarg2, &tval.it_interval);
+        bsd_load_timeval(uarg2 + 8, &tval.it_value);
         i = setitimer(sarg1, &tval, &oltval);
         if (i == -1)
             break;
-        copylong(tr_oltval->it_interval.tv_sec,
-                 oltval.it_interval.tv_sec);
-        copylong(tr_oltval->it_interval.tv_usec,
-                 oltval.it_interval.tv_usec);
-        copylong(tr_oltval->it_value.tv_sec, oltval.it_value.tv_sec);
-        copylong(tr_oltval->it_value.tv_usec, oltval.it_value.tv_usec);
+        if (uarg3) {
+            bsd_store_timeval(uarg3, &oltval.it_interval);
+            bsd_store_timeval(uarg3 + 8, &oltval.it_value);
+        }
         break;
     case S_UNLINK:		/* DONE */
         buf = xlate_filename((char *) &dspace[uarg1]);
@@ -647,18 +726,40 @@ dostat:
         i = socket(sarg1, sarg2, sarg3);
         break;
     case S_SOCKETPAIR:	/* DONE */
+        if (!valid_dspace_range(uarg4, sizeof(guest_fds))) {
+            i = -1;
+            break;
+        }
         i = socketpair(sarg1, sarg2, sarg3, pfd);
-        break;
-        shortptr = (int16_t *) & dspace[uarg4];
-        *shortptr = pfd[0];
-        shortptr += 2;
-        *shortptr = pfd[1];
+        if (i == -1)
+            break;
+        guest_fds[0] = pfd[0];
+        guest_fds[1] = pfd[1];
+        memcpy(&dspace[uarg4], guest_fds, sizeof(guest_fds));
         break;
     case S_RECV:		/* DONE */
+        if (sarg3 < 0) {
+            errno = EINVAL;
+            i = -1;
+            break;
+        }
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
         i = recv(sarg1, buf, sarg3, sarg4);
         break;
     case S_SEND:		/* DONE */
+        if (sarg3 < 0) {
+            errno = EINVAL;
+            i = -1;
+            break;
+        }
+        if (!valid_dspace_range(uarg2, uarg3)) {
+            i = -1;
+            break;
+        }
         buf = (char *) &dspace[uarg2];
         i = send(sarg1, buf, sarg3, sarg4);
         break;
@@ -789,13 +890,19 @@ dostat:
         break;
     case S_GETRUSAGE:
         TrapDebug((dbg_file, "arg1 %d pointer 0%o ", sarg1, uarg2));
-        tr_use = (struct tr_rusage *) &dspace[uarg2];
+        if (!valid_dspace_range(uarg2, sizeof(guest_use))) {
+            i = -1;
+            break;
+        }
         i = getrusage(sarg1, &use);
         if (i == -1)
             break;
 
-        /* Should do tr_use->ru_utime;        user time used */
-        /* Should do tr_use->ru_stime;        system time used */
+        memset(tr_use, 0, sizeof(*tr_use));
+        copylong(tr_use->ru_utime.tv_sec, use.ru_utime.tv_sec);
+        copylong(tr_use->ru_utime.tv_usec, use.ru_utime.tv_usec);
+        copylong(tr_use->ru_stime.tv_sec, use.ru_stime.tv_sec);
+        copylong(tr_use->ru_stime.tv_usec, use.ru_stime.tv_usec);
         copylong(tr_use->ru_maxrss, use.ru_maxrss);
         copylong(tr_use->ru_ixrss, use.ru_ixrss);
         copylong(tr_use->ru_idrss, use.ru_idrss);
@@ -811,6 +918,7 @@ dostat:
         copylong(tr_use->ru_nsignals, use.ru_nsignals);
         copylong(tr_use->ru_nvcsw, use.ru_nvcsw);
         copylong(tr_use->ru_nivcsw, use.ru_nivcsw);
+        memcpy(&dspace[uarg2], tr_use, sizeof(*tr_use));
         break;
     default:
         if ((ir & 0xff) > S_GETSOCKNAME) {

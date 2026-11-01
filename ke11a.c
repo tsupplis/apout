@@ -101,21 +101,27 @@ void kesl_byte(u_int16_t addr, u_int8_t byte)
 
 void eae_wr(u_int16_t data, u_int16_t PA, int32_t access)
 {
-    int32_t divisor, quotient, remainder;
+    int32_t divisor, remainder;
+    int64_t quotient;
     int32_t dividend, product;
-    int32_t oldMQ;
+    u_int32_t value, oldMQ, sign;
+    unsigned count;
     int pid;
 
     switch (PA) {
     case eae_DIV:
         SC = 0;
-        dividend = (AC << 16) | MQ;
+        dividend = (int32_t) (((u_int32_t) AC << 16) | (MQ & 0177777));
         divisor = data;
         if (divisor >> 15)
             divisor = divisor | ~077777;
-        quotient = dividend / divisor;
+        if (divisor == 0) {
+            fprintf(stderr, "Apout - KE11 division by zero at PC 0%o\n", regs[PC]);
+            exit(EXIT_FAILURE);
+        }
+        quotient = (int64_t) dividend / divisor;
         MQ = quotient & 0177777;
-        remainder = dividend % divisor;
+        remainder = (int64_t) dividend % divisor;
         AC = remainder & 0177777;
         SR = SR & 076;
         if ((quotient > 32767) || (quotient < -32768)) {	/* did we overflow? */
@@ -156,11 +162,7 @@ void eae_wr(u_int16_t data, u_int16_t PA, int32_t access)
         return;
     case eae_MUL:
         SC = 0;
-        if (data >> 15)
-            data = data | ~077777;
-        if (MQ >> 15)
-            MQ = MQ | ~077777;
-        product = MQ * data;
+        product = (int32_t) (int16_t) MQ * (int32_t) (int16_t) data;
         MQ = product & 0177777;
         AC = (product >> 16) & 0177777;
         SR = SR & 076;
@@ -176,61 +178,41 @@ void eae_wr(u_int16_t data, u_int16_t PA, int32_t access)
     case eae_SR:
         return;		/* this is a No-op */
     case eae_NOR:		/* Normalize */
-        MQ = (AC << 16) | MQ;	/* 32-bit number to normalize in MQ */
+        value = ((u_int32_t) AC << 16) | (MQ & 0177777);
         for (SC = 0; SC < 31; SC++) {
-            if (MQ == (0140000 << 16))
+            if (value == (0140000U << 16))
                 break;
-            if ((((MQ >> 30) & 3) == 1) || (((MQ >> 30) & 3) == 2))
+            if ((((value >> 30) & 3) == 1) || (((value >> 30) & 3) == 2))
                 break;
-            MQ = MQ << 1;
+            value <<= 1;
         }
-        printf("SC = %o\r\n", SC);
-        AC = (MQ >> 16) & 0177777;
-        MQ = MQ & 0177777;
+        AC = (value >> 16) & 0177777;
+        MQ = value & 0177777;
         return;
     case eae_LSH:		/* Logical shift */
-        MQ = (AC << 16) | MQ;	/* Form a temporary 32-bit entity */
-        oldMQ = MQ & 0x80000000;	/* Save the sign bit for later */
-        SR = SR & 0176;	/* Clear overflow & carry bits */
-        data = data & 077;	/* Convert data from 6-bit */
-        if (data > 31) {
-            data = 64 - data;	/* Shift in a -ve direction */
-            SR = SR | ((MQ >> (data - 1)) & 1);	/* Get the bit that went off the end */
-            MQ = MQ >> data;	/* and do the right shift */
-        } else {		/* Else left shift */
-            if ((MQ << (data - 1)) & 0x80000000)
-                SR |= 1;	/* Get the bit off the end */
-            MQ = MQ << data;	/* and do the left shift */
-        }
-        oldMQ = oldMQ ^ MQ;	/* Any difference in sign bit? */
-        if (oldMQ & 0x80000000)
-            SR |= 0200;	/* Yes, set the overflow bit */
-        AC = (MQ >> 16) & 0177777;	/* Save result in AC and MQ */
-        MQ = MQ & 0177777;
-        set_SR();
-        return;
-
     case eae_ASH:		/* Arithmetic shift */
-        MQ = (AC << 16) | MQ;	/* Form a temporary 32-bit entity */
-        oldMQ = MQ & 0x80000000;	/* Save the sign bit for later */
-        SR = SR & 0176;	/* Clear overflow & carry bits */
-        data = data & 077;	/* Convert data from 6-bit */
+        value = ((u_int32_t) AC << 16) | (MQ & 0177777);
+        oldMQ = value;
+        SR &= 0176;
+        data &= 077;
         if (data > 31) {
-            data = 64 - data;	/* Shift in a -ve direction */
-            divisor = 1 << data;	/* Work out the dividing factor */
-            SR = SR | ((MQ >> (data - 1)) & 1);	/* Get the bit that went off the end */
-            MQ = MQ / divisor;	/* and do the right shift */
-        } else {		/* Else left shift */
-            product = 1 << data;	/* Work out the multiplying factor */
-            if ((MQ << (data - 1)) & 0x80000000)
-                SR |= 1;	/* Get the bit off the end */
-            MQ = MQ * product;	/* and do the left shift */
+            count = 64 - data;
+            sign = PA == eae_ASH ? value & 0x80000000U : 0;
+            while (count--) {
+                SR = (SR & ~1) | (value & 1);
+                value = (value >> 1) | sign;
+            }
+        } else {
+            count = data;
+            while (count--) {
+                SR = (SR & ~1) | (value >> 31);
+                value <<= 1;
+            }
         }
-        oldMQ = oldMQ ^ MQ;	/* Any difference in sign bit? */
-        if (oldMQ & 0x80000000)
-            SR |= 0200;	/* Yes, set the overflow bit */
-        AC = (MQ >> 16) & 0177777;	/* Save result in AC and MQ */
-        MQ = MQ & 0177777;
+        if ((oldMQ ^ value) & 0x80000000U)
+            SR |= 0200;
+        AC = (value >> 16) & 0177777;
+        MQ = value & 0177777;
         set_SR();
         return;
 

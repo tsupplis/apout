@@ -22,11 +22,11 @@ float powf(float x, float y);	/* FreeBSD 3.X no longer defines this */
 #define XUL	170141163178059628080016879768632819712.0	/* Biggest float */
 
 typedef struct {
-    unsigned frac1:7;		/* Fractional part of number */
-    unsigned exp:8;		/* Excess 128 notation: exponenents -128 to +127 */
+    u_int16_t frac1:7;		/* Fractional part of number */
+    u_int16_t exp:8;		/* Excess 128 notation: exponenents -128 to +127 */
     /* become 0 to 255 */
-    unsigned sign:1;		/* If 1, float is negative */
-    unsigned frac2:16;		/* Fractional part of number */
+    u_int16_t sign:1;		/* If 1, float is negative */
+    u_int16_t frac2:16;		/* Fractional part of number */
 } pdpfloat;
 
 
@@ -55,14 +55,17 @@ static void from11float(FLOAT * out, pdpfloat * in)
 {
     int32_t exponent;
     u_int32_t fraction;
-    FLOAT z;
+
+    if (in->exp == 0) {
+        *out = 0.0;
+        return;
+    }
 
     exponent = in->exp - 128 - 24;	/* 24 so as to shift the radix point left */
     /* Add in the missing significant bit */
     fraction = (in->frac1 << 16) + in->frac2 + 8388608;
 
-    z = powf(2.0, (float) exponent);
-    *out = (float) fraction *z;
+    *out = (FLOAT) ldexp((double) fraction, exponent);
     if (in->sign)
         *out = -(*out);
     FpDebug((dbg_file, "\t0%o from11float out is %f\n", regs[7], *out));
@@ -75,6 +78,11 @@ static void to11float(FLOAT * in, pdpfloat * out)
     u_int32_t fraction;
     FLOAT infloat = *in;
 
+    if (!isfinite(infloat)) {
+        fprintf(stderr, "Apout - cannot store non-finite floating-point value at PC 0%o\n",
+                regs[PC]);
+        exit(EXIT_FAILURE);
+    }
     FpDebug((dbg_file, "\t0%o to11float in is %f\n", regs[7], infloat));
     if (infloat < 0.0) {
         out->sign = 1;
@@ -152,22 +160,14 @@ static void load_flt(void)
         }
         return;
     case 3:
-        ll_word(regs[DST_REG], indirect);
         if (DST_REG == PC) {
-            intptr = (u_int16_t *) & ispace[indirect];
-            intpair.lo = *intptr;
-            intpair.hi = 0;
-            fladdr = (pdpfloat *) & intpair;
-            from11float(&Srcflt, fladdr);
-            regs[DST_REG] += 2;
+            lli_word(regs[DST_REG], indirect);
         } else {
-            fladdr = (pdpfloat *) & dspace[indirect];
-            from11float(&Srcflt, fladdr);
-            if (FPMODE)
-                regs[DST_REG] += 8;
-            else
-                regs[DST_REG] += 4;
+            ll_word(regs[DST_REG], indirect);
         }
+        fladdr = (pdpfloat *) & dspace[indirect];
+        from11float(&Srcflt, fladdr);
+        regs[DST_REG] += 2;
         return;
     case 4:
         if (FPMODE)
@@ -178,10 +178,7 @@ static void load_flt(void)
         from11float(&Srcflt, fladdr);
         return;
     case 5:
-        if (FPMODE)
-            regs[DST_REG] -= 8;
-        else
-            regs[DST_REG] -= 4;
+        regs[DST_REG] -= 2;
         ll_word(regs[DST_REG], indirect);
         fladdr = (pdpfloat *) & dspace[indirect];
         from11float(&Srcflt, fladdr);
@@ -233,15 +230,14 @@ static void save_flt(void)
             regs[DST_REG] += 4;
         return;
     case 3:
-        ll_word(regs[DST_REG], indirect);
+        if (DST_REG == PC) {
+            lli_word(regs[DST_REG], indirect);
+        } else {
+            ll_word(regs[DST_REG], indirect);
+        }
         fladdr = (pdpfloat *) & dspace[indirect];
         to11float(&Srcflt, fladdr);
-        if (DST_REG == PC)
-            regs[DST_REG] += 2;
-        else if (FPMODE)
-            regs[DST_REG] += 8;
-        else
-            regs[DST_REG] += 4;
+        regs[DST_REG] += 2;
         return;
     case 4:
         if (FPMODE)
@@ -252,10 +248,7 @@ static void save_flt(void)
         to11float(&Srcflt, fladdr);
         return;
     case 5:
-        if (FPMODE)
-            regs[DST_REG] -= 8;
-        else
-            regs[DST_REG] -= 4;
+        regs[DST_REG] -= 2;
         ll_word(regs[DST_REG], indirect);
         fladdr = (pdpfloat *) & dspace[indirect];
         to11float(&Srcflt, fladdr);
@@ -323,7 +316,7 @@ static void load_long(void)
         } else {
             ll_word(indirect, addr);
         }
-        regs[DST_REG] += 4;
+        regs[DST_REG] += 2;
         ll_long(addr, srclong);
         return;
     case 4:
@@ -332,7 +325,7 @@ static void load_long(void)
         ll_long(addr, srclong);
         return;
     case 5:
-        regs[DST_REG] -= 4;
+        regs[DST_REG] -= 2;
         indirect = regs[DST_REG];
         ll_word(indirect, addr);
         ll_long(addr, srclong);
@@ -374,8 +367,12 @@ static void store_long(void)
         return;
     case 3:
         indirect = regs[DST_REG];
-        ll_word(indirect, addr);
-        regs[DST_REG] += 4;
+        if (DST_REG == PC) {
+            lli_word(indirect, addr);
+        } else {
+            ll_word(indirect, addr);
+        }
+        regs[DST_REG] += 2;
         sl_long(addr, dstlong);
         return;
     case 4:
@@ -384,7 +381,7 @@ static void store_long(void)
         sl_long(addr, dstlong);
         return;
     case 5:
-        regs[DST_REG] -= 4;
+        regs[DST_REG] -= 2;
         indirect = regs[DST_REG];
         ll_word(indirect, addr);
         sl_long(addr, dstlong);
@@ -467,7 +464,7 @@ void clrf()
     AC = (ir >> 6) & 3;
     Srcflt = 0.0;
     save_flt();
-    FPC = FPZ = FPV = 0;
+    FPC = FPN = FPV = 0;
     FPZ = 1;
 }
 
@@ -517,7 +514,11 @@ void negf()
 {
     /* Negate float */
     load_flt();
-    fladdr->sign = -(fladdr->sign);
+    Srcflt = -Srcflt;
+    if (fladdr == NULL)
+        fregs[DST_REG] = Srcflt;
+    else if (fladdr->exp)
+        fladdr->sign ^= 1;
     FPC = 0;
     FPV = 0;
     if (Srcflt == 0.0)
@@ -535,7 +536,10 @@ void absf()
 {
     /* Absolute float */
     load_flt();
-    fladdr->sign = 0;
+    if (fladdr == NULL)
+        fregs[DST_REG] = (FLOAT) fabs((double) Srcflt);
+    else
+        fladdr->sign = 0;
     FPC = 0;
     FPV = 0;
     FPN = 0;
@@ -659,28 +663,30 @@ void ldfps()
 {
     /* Load FPP status */
     load_dst();
-    if (dstword & CC_NBIT)
-        CC_N = 1;
-    if (dstword & CC_ZBIT)
-        CC_Z = 1;
-    if (dstword & CC_VBIT)
-        CC_V = 1;
-    if (dstword & CC_CBIT)
-        CC_C = 1;
+    FPN = !!(dstword & CC_NBIT);
+    FPZ = !!(dstword & CC_ZBIT);
+    FPV = !!(dstword & CC_VBIT);
+    FPC = !!(dstword & CC_CBIT);
+    FPMODE = !!(dstword & 0200);
+    INTMODE = !!(dstword & 040);
 }
 
 void stfps()
 {
     /* Store FPP status */
-    srcword = 0;
-    if (CC_N)
-        srcword |= CC_NBIT;
-    if (CC_Z)
-        srcword |= CC_ZBIT;
-    if (CC_V)
-        srcword |= CC_VBIT;
-    if (CC_C)
-        srcword |= CC_CBIT;
+    dstword = 0;
+    if (FPN)
+        dstword |= CC_NBIT;
+    if (FPZ)
+        dstword |= CC_ZBIT;
+    if (FPV)
+        dstword |= CC_VBIT;
+    if (FPC)
+        dstword |= CC_CBIT;
+    if (FPMODE)
+        dstword |= 0200;
+    if (INTMODE)
+        dstword |= 040;
     store_dst();
 }
 
@@ -689,12 +695,15 @@ void lcdif()
     /* Convert int to float */
     AC = (ir >> 6) & 3;
     if (INTMODE == 0) {		/* ints */
-        load_src();
-        fregs[AC] = (float) srcword;
+        load_dst();
+        fregs[AC] = (FLOAT) (int16_t) dstword;
     } else {
         load_long();
         fregs[AC] = (float) srclong;
     }
+    FPC = FPV = 0;
+    FPN = fregs[AC] < 0.0;
+    FPZ = fregs[AC] == 0.0;
 }
 
 void stcfi()
@@ -731,7 +740,9 @@ void stcdf()
 
 void ldcdf()
 {
+    FPMODE = 1 - FPMODE;
     ldf();
+    FPMODE = 1 - FPMODE;
 }
 
 void stst()
@@ -745,9 +756,10 @@ void ldexpp()
 
     AC = (ir >> 6) & 3;
     to11float(&fregs[AC], &pdptmp);
-    load_src();			/* srcword now holds new exponent */
-    srcword += 128;		/* Convert to required exponent */
-    srcword &= 0xff;
-    pdptmp.exp = srcword;
+    load_dst();
+    pdptmp.exp = (dstword + 128) & 0xff;
     from11float(&fregs[AC], &pdptmp);
+    FPC = FPV = 0;
+    FPN = fregs[AC] < 0.0;
+    FPZ = fregs[AC] == 0.0;
 }

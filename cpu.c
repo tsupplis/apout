@@ -164,8 +164,18 @@ void sim_init()
     CLR_CC_ALL();
 }
 
+int valid_dspace_range(u_int16_t addr, size_t length)
+{
+    if ((length && addr == 0) || length > PDP_MEM_SIZE - (size_t) addr) {
+        errno = EFAULT;
+        return 0;
+    }
+    return 1;
+}
+
 void bus_error(int signo)
 {
+    fprintf(stderr, "Apout - bus error at PC 0%06o\n", regs[PC]);
     TrapDebug((dbg_file, "Apout - pid %d bus error at PC 0%06o\n",
                (int) getpid(), regs[PC]));
     TrapDebug((dbg_file, "%06o  ", ir));

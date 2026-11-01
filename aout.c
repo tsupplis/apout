@@ -713,9 +713,12 @@ static void set_arg_env(int want_env)
     for (i = Argc - 1; i != -1; i--) {	/* For each arg string */
         len = strlen(Argv[i]) + 1;	/* get its length */
         posn -= len;
+        if (i == 0)
+            posn &= ~1;		/* V7 crt0 clears the word preceding argv[0]. */
         memcpy(&dspace[posn], Argv[i], (size_t) len);
         aposn[i] = posn;
     }
+    posn &= ~1;
     posn -= 2;
     sl_word(posn, 0);		/* Put a NULL at end of env array */
 

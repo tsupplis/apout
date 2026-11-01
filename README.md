@@ -1,8 +1,8 @@
 # Apout -- Simulate PDP-11 Unix a.out binaries
 
-Version 2.3.2
+Version 2.4.0
 
-Warren Toomey  wkt@tuhs.org June 2002
+Warren Toomey  wkt@tuhs.org February 2026
 
 The code is merge of DoctorWKT/apout and vifino/apout with extra fixes.
 
@@ -25,7 +25,7 @@ contains tar archives of a.out binaries from several versions of UNIX.
 
 ## Status
 
-The program is now at release 2.3.2. Most of the binaries from V5, V6
+The program is now at release 2.4.0 Most of the binaries from V5, V6
 and V7 run fine. All of the V5/V6/V7 system calls are caught, but some are
 ignored and some generate EPERM errors. The V1, V2, 2.9BSD and 2.11BSD
 environments are still under construction: see the file LIMITATIONS for
@@ -58,6 +58,33 @@ is disabled.
 
 Once you have configured apout, now type make. Hopefully, things will
 compile ok. You will eventually get the apout program.
+
+## Regression tests
+
+Run `make test` for loader alignment, instruction, floating-point, KE11A, terminal and signal
+regressions, plus BSD time/timer calls, resource usage, vectors and socket pairs.
+`make test-sanitize` runs the same checks with AddressSanitizer
+and UndefinedBehaviorSanitizer (a supporting compiler is required).
+Tests use private memory and a pseudoterminal, not your current terminal.
+Expected error-path checks print diagnostics and must exit cleanly.
+
+Run `make test-smoke` to exercise real V6, V7 and 2.11BSD binaries.
+The default fixture directory is `$HOME/Emulation/PDP11`, containing
+`v6root`, `v7root` and `bsdroot`. Override it with
+`make test-smoke PDP11_FIXTURES=/path/to/PDP11`.
+Historical binaries are not bundled; missing fixtures fail explicitly.
+Smoke tests run in a temporary directory and do not modify the fixture trees.
+
+Floating-point emulation still uses host single precision. Non-finite
+floating-point stores and KE11A division by zero now fail explicitly instead
+of hanging or invoking undefined host arithmetic; PDP-11 arithmetic exception
+delivery is not implemented.
+Odd or out-of-range word accesses report a bus error; this is not comprehensive
+validation of all guest buffers passed to host syscalls. Scalar read/write
+buffers are bounded for V1/V2/V5/V6/V7/BSD; BSD vector, send/receive and the
+covered time/resource outputs are also checked.
+
+## Running binaries
 
 Now go find an old PDP-11 UNIX binary, e.g 7th Edition cal, and say:
 

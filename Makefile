@@ -34,7 +34,7 @@ PREFIX?=/usr/local
 MANDIR=$(PREFIX)/share/man/man1
 BINDIR=$(PREFIX)/bin
 
-VERSION= apout2.3.2
+VERSION= apout2.4.0
 SRCS=	cpu.c aout.c aout.h branch.c double.c ea.c itab.c main.c ke11a.c \
 	single.c fp.c v7trap.c bsdtrap.c defines.h v7trap.h debug.c \
 	bsdtrap.h bsd_ioctl.c bsd_signal.c magic.c v1trap.c v1trap.h
@@ -43,6 +43,60 @@ OBJS=	aout.o branch.o bsd_ioctl.o bsd_signal.o bsdtrap.o cpu.o debug.o \
 	v7trap.o
 
 all: apout
+
+TEST_CFLAGS?= -O1 -g
+TEST_OPTIONS= -DEMU211 -DEMUV1 -DNATIVES -DRUN_V1_RAW -DWRITEBASE
+CORE_SRCS= cpu.c branch.c double.c single.c ea.c fp.c ke11a.c itab.c
+SYSCALL_SRCS= $(CORE_SRCS) aout.c bsdtrap.c bsd_ioctl.c bsd_signal.c magic.c v1trap.c
+LOADER_SRCS= $(filter-out aout.c,$(SYSCALL_SRCS)) v7trap.c
+BSD_TEST_SRCS= $(filter-out bsdtrap.c,$(SYSCALL_SRCS)) v7trap.c
+TEST_HEADERS= defines.h aout.h v7trap.h bsdtrap.h v1trap.h
+PDP11_FIXTURES?= $(HOME)/Emulation/PDP11
+
+.PHONY: all test test-sanitize test-smoke
+
+tests/core: tests/core.c $(CORE_SRCS) defines.h Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(CORE_SRCS) tests/core.c -o $@ $(LIBS)
+
+tests/main.o: main.c defines.h Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -Dmain=apout_main -c main.c -o $@
+
+tests/syscalls: tests/syscalls.c tests/main.o $(SYSCALL_SRCS) v7trap.c $(TEST_HEADERS) Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(SYSCALL_SRCS) tests/main.o tests/syscalls.c -o $@ $(LIBS)
+
+tests/loader: tests/loader.c tests/main.o $(LOADER_SRCS) aout.c $(TEST_HEADERS) Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(LOADER_SRCS) tests/main.o tests/loader.c -o $@ $(LIBS)
+
+tests/bsd: tests/bsd.c tests/main.o $(BSD_TEST_SRCS) bsdtrap.c $(TEST_HEADERS) Makefile
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(BSD_TEST_SRCS) tests/main.o tests/bsd.c -o $@ $(LIBS)
+
+test: tests/core tests/syscalls tests/loader tests/bsd
+	./tests/core
+	./tests/syscalls
+	./tests/loader
+	./tests/bsd
+
+test-sanitize:
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(CORE_SRCS) tests/core.c -o tests/core-sanitize $(LIBS)
+	./tests/core-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all -Dmain=apout_main -c main.c -o tests/main-sanitize.o
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(SYSCALL_SRCS) tests/main-sanitize.o \
+		tests/syscalls.c -o tests/syscalls-sanitize $(LIBS)
+	./tests/syscalls-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(LOADER_SRCS) tests/main-sanitize.o \
+		tests/loader.c -o tests/loader-sanitize $(LIBS)
+	./tests/loader-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(BSD_TEST_SRCS) tests/main-sanitize.o \
+		tests/bsd.c -o tests/bsd-sanitize $(LIBS)
+	./tests/bsd-sanitize
+
+test-smoke: apout
+	sh tests/smoke.sh "$(CURDIR)/apout" "$(PDP11_FIXTURES)"
 
 apout: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o apout $(LIBS)
@@ -54,6 +108,9 @@ install: apout apout.1
 	chmod 644 $(MANDIR)/apout.1
 
 clean:
+	rm -f tests/core tests/core-sanitize tests/syscalls tests/syscalls-sanitize \
+		tests/loader tests/loader-sanitize tests/main.o tests/main-sanitize.o
+	rm -f tests/bsd tests/bsd-sanitize
 	rm -rf apout *core $(OBJS) *.dbg $(VERSION) $(VERSION).tar.gz apout.0
 
 apout.0: apout.1
