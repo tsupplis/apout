@@ -19,3 +19,6 @@ tests/signals
 tests/signals-sanitize
 tests/terminal
 tests/terminal-sanitize
+tests/fixtures/run
+tests/fixtures/work.*
+tests/apout-sanitize

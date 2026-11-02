@@ -52,9 +52,8 @@ LOADER_SRCS= $(filter-out aout.c,$(SYSCALL_SRCS)) v7trap.c
 BSD_TEST_SRCS= $(filter-out bsdtrap.c,$(SYSCALL_SRCS)) v7trap.c
 TERMINAL_TEST_SRCS= $(filter-out bsd_ioctl.c,$(SYSCALL_SRCS)) v7trap.c
 TEST_HEADERS= defines.h aout.h v7trap.h bsdtrap.h v1trap.h
-PDP11_FIXTURES?= $(HOME)/Emulation/PDP11
 
-.PHONY: all test test-sanitize test-smoke
+.PHONY: all test test-sanitize test-smoke test-compat
 
 tests/core: tests/core.c $(CORE_SRCS) defines.h Makefile
 	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(CORE_SRCS) tests/core.c -o $@ $(LIBS)
@@ -77,15 +76,19 @@ tests/signals: tests/signals.c tests/main.o $(BSD_TEST_SRCS) bsdtrap.c $(TEST_HE
 tests/terminal: tests/terminal.c tests/main.o $(TERMINAL_TEST_SRCS) bsd_ioctl.c $(TEST_HEADERS) Makefile
 	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) $(TERMINAL_TEST_SRCS) tests/main.o tests/terminal.c -o $@ $(LIBS)
 
-test: tests/core tests/syscalls tests/loader tests/bsd tests/signals tests/terminal
+tests/fixtures/run: tests/fixtures/guest.c defines.h aout.h Makefile
+	$(CC) $(TEST_CFLAGS) tests/fixtures/guest.c -o $@
+
+test: tests/core tests/syscalls tests/loader tests/bsd tests/signals tests/terminal tests/fixtures/run apout
 	./tests/core
 	./tests/syscalls
 	./tests/loader
 	./tests/bsd
 	./tests/signals
 	./tests/terminal
+	sh tests/compat.sh "$(CURDIR)/apout"
 
-test-sanitize:
+test-sanitize: tests/fixtures/run
 	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
 		-fno-sanitize-recover=all $(CORE_SRCS) tests/core.c -o tests/core-sanitize $(LIBS)
 	./tests/core-sanitize
@@ -111,9 +114,15 @@ test-sanitize:
 		-fno-sanitize-recover=all $(TERMINAL_TEST_SRCS) tests/main-sanitize.o \
 		tests/terminal.c -o tests/terminal-sanitize $(LIBS)
 	./tests/terminal-sanitize
+	$(CC) $(TEST_CFLAGS) $(TEST_OPTIONS) -fsanitize=address,undefined \
+		-fno-sanitize-recover=all $(filter %.c,$(SRCS)) -o tests/apout-sanitize $(LIBS)
+	sh tests/compat.sh "$(CURDIR)/tests/apout-sanitize"
 
-test-smoke: apout
-	sh tests/smoke.sh "$(CURDIR)/apout" "$(PDP11_FIXTURES)"
+test-smoke: apout tests/fixtures/run
+	sh tests/smoke.sh "$(CURDIR)/apout"
+
+test-compat: apout tests/fixtures/run
+	sh tests/compat.sh "$(CURDIR)/apout"
 
 apout: $(OBJS)
 	$(CC) $(LDFLAGS) $(OBJS) -o apout $(LIBS)
@@ -129,6 +138,7 @@ clean:
 		tests/loader tests/loader-sanitize tests/main.o tests/main-sanitize.o
 	rm -f tests/bsd tests/bsd-sanitize
 	rm -f tests/signals tests/signals-sanitize tests/terminal tests/terminal-sanitize
+	rm -f tests/fixtures/run tests/apout-sanitize
 	rm -rf apout *core $(OBJS) *.dbg $(VERSION) $(VERSION).tar.gz apout.0
 
 apout.0: apout.1

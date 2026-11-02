@@ -82,12 +82,29 @@ Tests use private memory, a pseudoterminal, private Unix socket paths and
 IPv4 loopback ports, not your current terminal or external network services.
 Expected error-path checks print diagnostics and must exit cleanly.
 
-Run `make test-smoke` to exercise real V6, V7 and 2.11BSD binaries.
-The default fixture directory is `$HOME/Emulation/PDP11`, containing
-`v6root`, `v7root` and `bsdroot`. Override it with
-`make test-smoke PDP11_FIXTURES=/path/to/PDP11`.
-Historical binaries are not bundled; missing fixtures fail explicitly.
-Smoke tests run in a temporary directory and do not modify the fixture trees.
+All regression fixtures are project-owned. [tests/fixtures/guest.c](tests/fixtures/guest.c)
+generates original PDP-11 a.out programs for V6, V7 and 2.11BSD, then executes
+them through Apout and checks exit status, stdout, stderr and file contents.
+Generated binaries and outputs live in a private `tests/fixtures/work.*`
+directory and are removed after the run. No historical archive, personal path,
+download, guest compiler/assembler or external timeout utility is required.
+
+Run `make test-smoke` for six output/arithmetic checks. Run `make test-compat`
+for twelve end-to-end checks, in four batches of three: output, file I/O,
+arithmetic and exec across the three Unix ABIs. These checks are also included
+in `make test`; `make test-sanitize` runs them against a sanitized Apout build.
+Each guest process has a five-second timeout enforced by the test runner.
+To run one batch after building `apout` and `tests/fixtures/run`, use:
+
+```sh
+sh tests/compat.sh "$PWD/apout" files
+```
+
+Replace `files` with `write`, `arithmetic` or `exec` as needed.
+Any failed assertion, guest error or timeout makes the runner exit nonzero.
+These original programs test loader/CPU/syscall integration; they do **not**
+establish compatibility with complete historical shells or compiler toolchains.
+See the [fixture coverage table](limitations.md#project-owned-end-to-end-fixtures).
 
 Floating-point emulation still uses host single precision. Non-finite
 floating-point stores and KE11A division by zero now fail explicitly instead

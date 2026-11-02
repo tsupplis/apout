@@ -113,5 +113,29 @@ are covered by the current regression suite.
 | V2 `0407`, `s2.tar` | `bin/as`, `bin/cc`, `bin/ld`, `bin/size`, `bin/strip`, `etc/as2`, `usr/lib/c0`, `usr/lib/c1`. |
 | V2 compiler | Can compile the `last1120c` C compiler from Dennis Ritchie's archive. |
 
-For current regression commands and historical smoke-test coverage, see
+For current regression commands and project-owned fixture coverage, see
 [README.md](README.md#regression-tests).
+
+### Project-owned end-to-end fixtures
+
+The source in [tests/fixtures/guest.c](tests/fixtures/guest.c) generates original
+PDP-11 programs locally. No historical binaries, guest toolchain or external
+fixture tree is required. Generated artifacts are private to the project test
+directory and cleaned up after each run.
+
+| Workflow | V6 | V7 | 2.11BSD |
+|---|---|---|---|
+| Load an a.out, write known output and exit | PASS | PASS | PASS |
+| Create, write, close, reopen and read back a file | PASS | PASS | PASS |
+| Multiply 6 by 7 and return the result as exit status | PASS | PASS | PASS |
+| Exec another generated program with a guest argument vector | PASS | PASS | PASS |
+
+These **12 passing checks** cover loader/CPU/syscall integration, not full
+historical shell, assembler, linker or compiler compatibility. Earlier tests
+against an external archive found V6 compiler status and BSD linker failures;
+those failures remain unresolved and are not covered or fixed by these fixtures.
+
+Run `make test-compat` for all four batches, `make test-smoke` for six
+output/arithmetic checks, or `make test` for the complete self-contained suite.
+`make test-sanitize` includes the generated programs against a sanitized emulator.
+Any failure or five-second guest timeout returns a nonzero test status.
